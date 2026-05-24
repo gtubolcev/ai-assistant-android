@@ -1,27 +1,26 @@
+import 'package:cactus/cactus.dart';
 import 'package:http/http.dart' as http;
-import 'package:mcp_llm/mcp_llm.dart';
 
-/// Fetches a URL and returns clean text (strips HTML tags).
-/// Registered as tool "web_fetch".
-final LlmTool webFetchToolDef = LlmTool(
+/// Tool definition for the web_fetch tool (Cactus format).
+final CactusTool webFetchTool = CactusTool(
   name: 'web_fetch',
   description:
       'Fetch the text content of a web page. Use for reading articles, '
       'documentation, or any URL the user mentions.',
-  inputSchema: {
-    'type': 'object',
-    'properties': {
-      'url': {
-        'type': 'string',
-        'description': 'The full URL to fetch (must start with http/https)',
-      },
+  parameters: ToolParametersSchema(
+    properties: {
+      'url': ToolParameter(
+        type: 'string',
+        description: 'The full URL to fetch (must start with http/https)',
+        required: true,
+      ),
     },
-    'required': ['url'],
-  },
+  ),
 );
 
-Future<String> executeWebFetch(Map<String, dynamic> args) async {
-  final url = args['url'] as String?;
+/// Executes the web_fetch tool.
+Future<String> executeWebFetch(Map<String, String> args) async {
+  final url = args['url'];
   if (url == null || url.isEmpty) return 'Error: url is required';
 
   try {
@@ -33,7 +32,7 @@ Future<String> executeWebFetch(Map<String, dynamic> args) async {
       return 'Error: HTTP ${response.statusCode}';
     }
 
-    // Strip HTML tags, collapse whitespace — good enough for 270M/1.2B models.
+    // Strip HTML tags, collapse whitespace — good enough for 1.2B models.
     final text = response.body
         .replaceAll(RegExp(r'<style[^>]*>.*?</style>', dotAll: true), '')
         .replaceAll(RegExp(r'<script[^>]*>.*?</script>', dotAll: true), '')

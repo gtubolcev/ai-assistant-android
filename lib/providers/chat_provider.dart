@@ -1,27 +1,31 @@
-import 'dart:async';
-
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:cactus/cactus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:mcp_llm/mcp_llm.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 import '../tools/caldav_tool.dart';
 import '../tools/web_fetch_tool.dart';
-import 'cactus_llm_provider.dart';
 
-/// All available tools — registered both in Cactus and in the executor map.
-final _toolDefs = [
-  webFetchToolDef,
+/// All available tools — passed to Cactus for tool calling.
+final _allTools = <CactusTool>[
+  webFetchTool,
   listEventsTool,
   createEventTool,
   deleteEventTool,
 ];
 
-class ChatProvider extends ChangeNotifier {
-  // ── State ──────────────────────────────────────────────────────────────────
+/// System prompt — tells the model its capabilities and persona.
+const _systemPrompt =
+    'You are a helpful personal AI assistant running entirely on the user\'s '
+    'device. You have access to tools: web_fetch (fetch any URL), '
+    'caldav_list_events, caldav_create_event, caldav_delete_event. '
+    'Always respond in the same language the user uses. '
+    'Be concise — you run on a 1.2B parameter model.';
 
-  final List<ChatMessage> messages = [];
+class ChatProvider extends ChangeNotifier {
+  // ── Public state ───────────────────────────────────────────────────────────
+
+  final List<AppMessage> messages = [];
   bool isLoading = false;
   bool isModelReady = false;
   String statusText = 'Загрузка модели…';
@@ -29,34 +33,26 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  CactusLlmProvider? _localProvider;
+  CactusLM? _lm;
   CalDavExecutor? _calDav;
-  bool _useCloud = false;
 
-  // LLM message history passed to the model (system + turns).
-  final List<LlmMessage> _history = [
-    LlmMessage.system(
-      'You are a helpful personal AI assistant running entirely on the user\'s '
-      'device. You have access to tools: web_fetch (fetch any URL), '
-      'caldav_list_events, caldav_create_event, caldav_delete_event. '
-      'Always respond in the same language the user uses. '
-      'Be concise — you run on a 1.2B parameter model.',
-    ),
+  /// Conversation history passed to Cactus (system + alternating user/assistant).
+  final List<ChatMessage> _history = [
+    ChatMessage(role: 'system', content: _systemPrompt),
   ];
 
   // ── Initialisation ────────────────────────────────────────────────────────
 
   Future<void> init() async {
     try {
-      _localProvider = CactusLlmProvider(
-        modelId: 'lfm2.5-1.2b',
-        contextLength: 4096,
-      );
-
       statusText = 'Загрузка модели LFM2.5-1.2B…';
       notifyListeners();
 
-      await _localProvider!.initialize(LlmConfiguration());
+      _lm = CactusLM();
+      await _lm!.downloadModel(model: 'lfm2.5-1.2b');
+      await _lm!.initializeModel(
+        params: CactusInitParams(contextSize: 4096),
+      );
 
       // Load CalDAV config from SharedPreferences (set via settings screen).
       final prefs = await SharedPreferences.getInstance();
@@ -89,13 +85,8 @@ class ChatProvider extends ChangeNotifier {
   Future<void> sendMessage(String text) async {
     if (text.trim().isEmpty || isLoading || !isModelReady) return;
 
-    // Check connectivity once per message for cloud fallback decision.
-    // connectivity_plus 6.x returns List<ConnectivityResult>.
-    final connectivityResults = await Connectivity().checkConnectivity();
-    _useCloud = connectivityResults.any((r) => r != ConnectivityResult.none);
-
     // Add user message to UI.
-    _addMessage(ChatMessage(
+    _addMessage(AppMessage(
       id: _uid(),
       role: MessageRole.user,
       content: text.trim(),
@@ -103,11 +94,11 @@ class ChatProvider extends ChangeNotifier {
     ));
 
     // Add user turn to LLM history.
-    _history.add(LlmMessage.user(text.trim()));
+    _history.add(ChatMessage(role: 'user', content: text.trim()));
 
-    // Add placeholder assistant message (streaming).
+    // Placeholder assistant message (will be updated during streaming).
     final assistantId = _uid();
-    _addMessage(ChatMessage(
+    _addMessage(AppMessage(
       id: assistantId,
       role: MessageRole.assistant,
       content: '',
@@ -128,80 +119,77 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  // ── Agent loop (supports one round of tool calls) ─────────────────────────
+  // ── Agent loop ────────────────────────────────────────────────────────────
 
   Future<void> _runAgentLoop(String assistantId) async {
-    final provider = _localProvider!;
+    final lm = _lm!;
 
-    final request = LlmRequest(
-      prompt: '',          // prompt is already in _history
-      history: List.from(_history),
-      parameters: {
-        'tools': _toolDefs,
-        'temperature': 0.7,
-        'max_tokens': 512,
-      },
+    // ── First pass: streaming to fill UI in real-time ──────────────────────
+    final streamResult = await lm.generateCompletionStream(
+      messages: List.from(_history),
+      params: CactusCompletionParams(
+        tools: _allTools,
+        temperature: 0.7,
+        maxTokens: 512,
+      ),
     );
 
-    // First pass: stream response to UI.
     final buffer = StringBuffer();
-    await for (final chunk in provider.streamComplete(request)) {
-      if (chunk.textChunk.isNotEmpty) {
-        buffer.write(chunk.textChunk);
-        _updateMessage(assistantId, buffer.toString(), MessageStatus.sending);
-      }
+    await for (final chunk in streamResult.stream) {
+      buffer.write(chunk);
+      _updateMessage(assistantId, buffer.toString(), MessageStatus.sending);
     }
 
-    String finalText = buffer.toString();
+    // Get final result (includes parsed tool calls).
+    final finalResult = await streamResult.result;
 
-    // Second pass: check for tool calls in metadata via non-streaming complete.
-    // (Streaming doesn't return tool call metadata; we do a second pass only
-    //  if the streamed text looks like it contains a tool call marker.)
-    if (_looksLikeToolCall(finalText)) {
-      final result = await provider.complete(request);
-
-      if (provider.hasToolCallMetadata(result.metadata)) {
-        final toolCall = provider.extractToolCallFromMetadata(result.metadata);
-        if (toolCall != null) {
-          // Show "calling tool…" in UI.
-          _updateMessage(
-            assistantId,
-            '🔧 Вызываю инструмент: ${toolCall.name}…',
-            MessageStatus.sending,
-          );
-
-          final toolResult = await _executeTool(toolCall);
-
-          // Add tool result to history and do a final completion.
-          _history.add(LlmMessage(
-            role: 'tool',
-            content: toolResult,
-            metadata: {'tool_use_id': toolCall.id ?? toolCall.name},
-          ));
-
-          final finalRequest = LlmRequest(
-            prompt: '',
-            history: List.from(_history),
-            parameters: {'temperature': 0.7, 'max_tokens': 512},
-          );
-
-          final finalResult = await provider.complete(finalRequest);
-          finalText = finalResult.text;
-          _history.add(LlmMessage.assistant(finalText));
-        }
-      } else {
-        _history.add(LlmMessage.assistant(finalText));
+    if (finalResult.toolCalls.isNotEmpty) {
+      // ── Tool call round ────────────────────────────────────────────────
+      // Add assistant's (possibly partial) thinking text to history.
+      if (buffer.isNotEmpty) {
+        _history.add(ChatMessage(role: 'assistant', content: buffer.toString()));
       }
+
+      // Execute all tool calls.
+      final toolResults = <String>[];
+      for (final call in finalResult.toolCalls) {
+        _updateMessage(
+          assistantId,
+          '${buffer.isEmpty ? '' : '${buffer.toString()}\n\n'}'
+          '🔧 ${call.name}…',
+          MessageStatus.sending,
+        );
+
+        final result = await _executeTool(call);
+        toolResults.add('[${ call.name}] $result');
+
+        // Add tool result message to history.
+        _history.add(ChatMessage(
+          role: 'tool',
+          content: result,
+        ));
+      }
+
+      // ── Second pass: final answer after tools ──────────────────────────
+      final followUp = await lm.generateCompletion(
+        messages: List.from(_history),
+        params: CactusCompletionParams(temperature: 0.7, maxTokens: 512),
+      );
+
+      final finalText = followUp.response;
+      _history.add(ChatMessage(role: 'assistant', content: finalText));
+      _updateMessage(assistantId, finalText, MessageStatus.done);
     } else {
-      _history.add(LlmMessage.assistant(finalText));
+      // ── No tool calls: use streamed text directly ──────────────────────
+      final text = buffer.toString();
+      _history.add(ChatMessage(role: 'assistant', content: text));
+      _updateMessage(assistantId, text, MessageStatus.done);
     }
-
-    _updateMessage(assistantId, finalText, MessageStatus.done);
   }
 
   // ── Tool executor ─────────────────────────────────────────────────────────
 
-  Future<String> _executeTool(LlmToolCall call) async {
+  Future<String> _executeTool(ToolCall call) async {
     switch (call.name) {
       case 'web_fetch':
         return executeWebFetch(call.arguments);
@@ -221,11 +209,7 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  bool _looksLikeToolCall(String text) =>
-      text.contains('<|tool_call_start|>') ||
-      text.contains('"name"') && text.contains('"arguments"');
-
-  void _addMessage(ChatMessage msg) {
+  void _addMessage(AppMessage msg) {
     messages.add(msg);
     notifyListeners();
   }
@@ -264,7 +248,8 @@ class ChatProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    _localProvider?.close();
+    _lm?.unload();
+    _lm = null;
     super.dispose();
   }
 }

@@ -2,7 +2,9 @@ enum MessageRole { user, assistant, tool }
 
 enum MessageStatus { sending, done, error }
 
-class ChatMessage {
+/// App-level chat message (UI layer).
+/// Not to be confused with Cactus's ChatMessage (LLM conversation format).
+class AppMessage {
   final String id;
   final MessageRole role;
   final String content;
@@ -10,7 +12,7 @@ class ChatMessage {
   final String? toolName;     // set when role == tool
   final DateTime timestamp;
 
-  const ChatMessage({
+  const AppMessage({
     required this.id,
     required this.role,
     required this.content,
@@ -19,11 +21,11 @@ class ChatMessage {
     required this.timestamp,
   });
 
-  ChatMessage copyWith({
+  AppMessage copyWith({
     String? content,
     MessageStatus? status,
   }) =>
-      ChatMessage(
+      AppMessage(
         id: id,
         role: role,
         content: content ?? this.content,

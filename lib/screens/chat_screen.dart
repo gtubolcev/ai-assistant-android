@@ -146,7 +146,7 @@ class _ChatScreenState extends State<ChatScreen> {
 // ── Message bubble ─────────────────────────────────────────────────────────────
 
 class _MessageBubble extends StatelessWidget {
-  final ChatMessage message;
+  final AppMessage message;
   const _MessageBubble(this.message);
 
   @override
