@@ -21,8 +21,8 @@ android {
     buildTypes {
         release {
             signingConfig signingConfigs.debug   // CI: replace with keystore
-            minifyEnabled false                  // keep false until model loading is stable
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            minifyEnabled false
+            shrinkResources false
         }
     }
 
