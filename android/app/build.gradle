@@ -1,0 +1,49 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace "com.example.ai_assistant"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.example.ai_assistant"
+        minSdk 26          // Cactus requires API 24+; 26 gives us JobIntentService
+        targetSdk 35
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+
+        // Required for Cactus native libs
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug   // CI: replace with keystore
+            minifyEnabled false                  // keep false until model loading is stable
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    // Required for GGUF model file packaging
+    aaptOptions {
+        noCompress "gguf", "bin"
+    }
+}
+
+flutter {
+    source "../.."
+}

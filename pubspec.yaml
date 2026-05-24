@@ -1,0 +1,51 @@
+name: ai_assistant
+description: Offline-first AI assistant with on-device LFM2.5 inference and MCP tool support.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # On-device LLM inference (Cactus SDK)
+  cactus: ^0.1.0
+
+  # MCP client — StreamableHTTP transport (works on Android)
+  mcp_dart: ^2.1.1
+
+  # LLM provider abstraction + tool calling
+  mcp_llm: ^2.0.0
+
+  # State management
+  provider: ^6.1.2
+
+  # HTTP for web fetch tool and CalDAV
+  http: ^1.2.1
+
+  # Markdown rendering for assistant responses
+  flutter_markdown: ^0.7.3
+
+  # Shared preferences for settings persistence
+  shared_preferences: ^2.3.2
+
+  # URL launcher for share-sheet integration
+  url_launcher: ^6.3.0
+
+  # Connectivity check (for cloud fallback)
+  connectivity_plus: ^6.0.3
+
+  # XML parsing for CalDAV responses
+  xml: ^6.5.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
