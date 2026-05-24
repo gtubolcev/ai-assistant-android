@@ -50,15 +50,18 @@ class CactusLlmProvider implements LlmProvider {
   Future<void> initialize(LlmConfiguration config) async {
     _lm = CactusLM();
 
+    // Download the model (Cactus caches it after first download).
     // If a direct URL was provided, use it; otherwise let Cactus resolve
     // from its model library by modelId.
     if (modelUrl != null) {
-      await _lm!.downloadModel(modelUrl: modelUrl);
+      await _lm!.downloadModel(model: modelId);
     } else {
       await _lm!.downloadModel(model: modelId);
     }
 
-    await _lm!.initializeModel();
+    await _lm!.initializeModel(
+      params: CactusInitParams(contextSize: contextLength),
+    );
   }
 
   @override
@@ -78,14 +81,14 @@ class CactusLlmProvider implements LlmProvider {
     final messages = _buildMessages(request);
     final tools = _buildTools(request);
     final temperature = _resolveTemperature(request);
-    final maxTokens = request.parameters['max_tokens'] as int?;
+    final maxTokens = (request.parameters['max_tokens'] as num?)?.toInt();
 
     final result = await lm.generateCompletion(
       messages: messages,
       params: CactusCompletionParams(
         tools: tools.isNotEmpty ? tools : null,
         temperature: temperature,
-        maxTokens: maxTokens,
+        maxTokens: maxTokens ?? 200,
       ),
     );
 
@@ -97,28 +100,28 @@ class CactusLlmProvider implements LlmProvider {
     // hasToolCallMetadata / extractToolCallFromMetadata work correctly.
     final metadata = <String, dynamic>{};
     final rawToolCalls = result.toolCalls;
-    if (rawToolCalls != null && rawToolCalls.isNotEmpty) {
+    if (rawToolCalls.isNotEmpty) {
       metadata['tool_calls'] = rawToolCalls
           .map((tc) => {
                 'name': tc.name,
-                'arguments': tc.arguments ?? <String, dynamic>{},
-                'id': tc.id,
+                'arguments': Map<String, dynamic>.from(tc.arguments),
+                'id': null,
               })
           .toList();
     }
 
     return LlmResponse(
-      text: result.response ?? '',
+      text: result.response,
       metadata: metadata,
       // Convert to mcp_llm's LlmToolCall list so callers can use either path.
-      toolCalls: rawToolCalls
-          ?.map((tc) => LlmToolCall(
-                name: tc.name,
-                arguments: (tc.arguments ?? <String, dynamic>{})
-                    .cast<String, dynamic>(),
-                id: tc.id,
-              ))
-          .toList(),
+      toolCalls: rawToolCalls.isNotEmpty
+          ? rawToolCalls
+              .map((tc) => LlmToolCall(
+                    name: tc.name,
+                    arguments: Map<String, dynamic>.from(tc.arguments),
+                  ))
+              .toList()
+          : null,
     );
   }
 
@@ -132,35 +135,41 @@ class CactusLlmProvider implements LlmProvider {
 
     final messages = _buildMessages(request);
     final temperature = _resolveTemperature(request);
-    final maxTokens = request.parameters['max_tokens'] as int?;
+    final maxTokens = (request.parameters['max_tokens'] as num?)?.toInt();
 
-    // Bridge Cactus callback-based streaming → Dart Stream via StreamController.
+    // Bridge Cactus stream-based output → Dart Stream via StreamController.
     final controller = StreamController<LlmResponseChunk>();
 
-    // Fire-and-forget; errors are forwarded to the stream.
     lm
-        .generateCompletion(
+        .generateCompletionStream(
           messages: messages,
           params: CactusCompletionParams(
             // Tool calls during streaming aren't parsed token-by-token;
             // they arrive in the final result. For now we don't pass tools
             // during streaming — do a non-streaming complete() if tools matter.
             temperature: temperature,
-            maxTokens: maxTokens,
-            onToken: (String token) {
+            maxTokens: maxTokens ?? 200,
+          ),
+        )
+        .then((streamedResult) async {
+          try {
+            await for (final chunk in streamedResult.stream) {
               if (!controller.isClosed) {
                 controller.add(LlmResponseChunk(
-                  textChunk: token,
+                  textChunk: chunk,
                   isDone: false,
                 ));
               }
-            },
-          ),
-        )
-        .then((_) {
-          if (!controller.isClosed) {
-            controller.add(const LlmResponseChunk(textChunk: '', isDone: true));
-            controller.close();
+            }
+            if (!controller.isClosed) {
+              controller.add(LlmResponseChunk(textChunk: '', isDone: true));
+              controller.close();
+            }
+          } catch (e, st) {
+            if (!controller.isClosed) {
+              controller.addError(e, st);
+              controller.close();
+            }
           }
         })
         .catchError((Object e, StackTrace st) {
@@ -174,15 +183,14 @@ class CactusLlmProvider implements LlmProvider {
   }
 
   // ─────────────────────────────────────────────
-  // Embeddings (not supported by Cactus Flutter SDK)
+  // Embeddings — delegated to Cactus embedding API
   // ─────────────────────────────────────────────
 
   @override
-  Future<List<double>> getEmbeddings(String text) {
-    throw UnimplementedError(
-      'Embeddings are not supported by the Cactus Flutter SDK. '
-      'Use a dedicated embedding model or a cloud provider for RAG retrieval.',
-    );
+  Future<List<double>> getEmbeddings(String text) async {
+    final lm = _requireInitialized();
+    final result = await lm.generateEmbedding(text: text);
+    return result.embeddings;
   }
 
   // ─────────────────────────────────────────────
@@ -206,7 +214,6 @@ class CactusLlmProvider implements LlmProvider {
     return LlmToolCall(
       name: first['name'] as String,
       arguments: (first['arguments'] as Map?)?.cast<String, dynamic>() ?? {},
-      id: first['id'] as String?,
     );
   }
 
@@ -258,10 +265,9 @@ class CactusLlmProvider implements LlmProvider {
   /// mcp_llm uses JSON Schema in [LlmTool.inputSchema]; Cactus uses its own
   /// typed [ToolParametersSchema]. We parse the properties map manually.
   List<CactusTool> _buildTools(LlmRequest request) {
-    // Tools may arrive via request.context or request.parameters['tools'].
-    final rawTools = request.context?.tools ??
-        (request.parameters['tools'] as List?)
-            ?.cast<LlmTool>();
+    // Tools arrive via request.parameters['tools'] as List<LlmTool>.
+    final rawTools =
+        (request.parameters['tools'] as List?)?.cast<LlmTool>();
 
     if (rawTools == null || rawTools.isEmpty) return [];
 
@@ -272,7 +278,7 @@ class CactusLlmProvider implements LlmProvider {
     final schema = tool.inputSchema;
     final properties =
         (schema['properties'] as Map?)?.cast<String, dynamic>() ?? {};
-    final required =
+    final requiredList =
         (schema['required'] as List?)?.cast<String>() ?? <String>[];
 
     return CactusTool(
@@ -285,7 +291,7 @@ class CactusLlmProvider implements LlmProvider {
               type: (entry.value as Map?)?['type'] as String? ?? 'string',
               description:
                   (entry.value as Map?)?['description'] as String? ?? '',
-              required: required.contains(entry.key),
+              required: requiredList.contains(entry.key),
             ),
         },
       ),
@@ -306,12 +312,6 @@ class CactusLlmProvider implements LlmProvider {
 ///
 /// ```dart
 /// mcpLlm.registerProvider('cactus', CactusProviderFactory('lfm2.5-1.2b'));
-/// ```
-///
-/// If [McpLlm.registerProvider] accepts a [LlmProvider Function()] instead of
-/// an object, pass [CactusProviderFactory.build] directly:
-/// ```dart
-/// mcpLlm.registerProvider('cactus', factory.build);
 /// ```
 class CactusProviderFactory {
   final String modelId;

@@ -90,8 +90,9 @@ class ChatProvider extends ChangeNotifier {
     if (text.trim().isEmpty || isLoading || !isModelReady) return;
 
     // Check connectivity once per message for cloud fallback decision.
-    final connectivity = await Connectivity().checkConnectivity();
-    _useCloud = connectivity != ConnectivityResult.none;
+    // connectivity_plus 6.x returns List<ConnectivityResult>.
+    final connectivityResults = await Connectivity().checkConnectivity();
+    _useCloud = connectivityResults.any((r) => r != ConnectivityResult.none);
 
     // Add user message to UI.
     _addMessage(ChatMessage(
