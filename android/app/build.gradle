@@ -15,10 +15,7 @@ android {
         versionCode flutter.versionCode
         versionName flutter.versionName
 
-        // Required for Cactus native libs
-        ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a"
-        }
+        // ABI filtering is handled by --split-per-abi in the build command
     }
 
     buildTypes {
