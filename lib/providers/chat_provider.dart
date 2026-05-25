@@ -35,8 +35,10 @@ String _buildSystemPrompt({
   return 'You are a helpful personal AI assistant running entirely on the user\'s '
       'device. You have access to tools: '
       'web_fetch (fetch any URL and return its content), '
-      'and a set of calendar/contacts/tasks tools via CalDAV (list, create, update, '
-      'delete events, contacts, todos).$caldavHint '
+      'and CalDAV tools for calendar/contacts/tasks (list, create, update, delete).$caldavHint '
+      'IMPORTANT for CalDAV: never guess calendar_url or addressbook_url. '
+      'Always call list_calendars or list_addressbooks first to discover '
+      'the correct URLs, then use those URLs in subsequent tool calls. '
       'Always respond in the same language the user uses. '
       'Be concise — you run on a 1.2B parameter model.';
 }
