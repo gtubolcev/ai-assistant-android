@@ -82,32 +82,50 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Model resolution ───────────────────────────────────────────────────────
 
+  /// SharedPreferences key that records which source path was last imported.
+  /// Used to avoid re-copying when the app restarts with the same custom path.
+  static const _kModelSourceKey = 'model_source_path';
+
   /// Ensures the model is in Cactus's internal directory.
-  /// Priority: internal cache → user-specified path → external storage → download.
+  ///
+  /// Priority:
+  ///   1. User-specified path (settings) — always wins; re-imports if path changed.
+  ///   2. Internal cache — used when no custom path is set.
+  ///   3. Auto-search in external (package-scoped) storage.
+  ///   4. Download from Cactus servers.
   Future<void> _ensureModelAvailable() async {
     final appDocDir = await getApplicationDocumentsDirectory();
     final internalDir = Directory('${appDocDir.path}/models/$_kModelSlug');
-
-    // 1. Already cached internally?
-    if (await _dirHasFiles(internalDir)) {
-      debugPrint('Model found in internal cache: ${internalDir.path}');
-      return;
-    }
-
-    // 2. Custom path from settings?
     final prefs = await SharedPreferences.getInstance();
+
+    // 1. Custom path from settings takes priority.
     final customPath = (prefs.getString('model_path') ?? '').trim();
     if (customPath.isNotEmpty) {
+      final cachedSource = prefs.getString(_kModelSourceKey) ?? '';
+      // Skip re-import if the cache was already built from this exact path.
+      if (cachedSource == customPath && await _dirHasFiles(internalDir)) {
+        debugPrint('Model already imported from $customPath — using cache');
+        return;
+      }
       statusText = 'Поиск модели: $customPath';
       notifyListeners();
       final source = await _resolveModelSource(customPath);
       if (source != null) {
+        // Clear stale cache, then import from the new source.
+        if (await internalDir.exists()) await internalDir.delete(recursive: true);
         await _importModelToInternal(source, internalDir);
+        await prefs.setString(_kModelSourceKey, customPath);
         return;
       }
-      // Path is set but nothing found — let the user know and fall through.
+      // Path is set but nothing found — warn and fall through.
       errorText = 'Модель не найдена: $customPath';
       notifyListeners();
+    }
+
+    // 2. Already cached internally (from a previous download or import)?
+    if (await _dirHasFiles(internalDir)) {
+      debugPrint('Model found in internal cache: ${internalDir.path}');
+      return;
     }
 
     // 3. Auto-search in external (package-scoped) storage.
@@ -291,7 +309,9 @@ class ChatProvider extends ChangeNotifier {
     final buffer = StringBuffer();
     await for (final chunk in streamResult.stream) {
       buffer.write(chunk);
-      _updateMessage(assistantId, buffer.toString(), MessageStatus.sending);
+      // Strip tool-call markup from the live display; Cactus parses it separately.
+      _updateMessage(
+          assistantId, _stripToolMarkup(buffer.toString()), MessageStatus.sending);
     }
 
     final finalResult = await streamResult.result;
@@ -381,6 +401,19 @@ class ChatProvider extends ChangeNotifier {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Removes LFM tool-call markup from a streaming text so it isn't shown to
+  /// the user while the model is generating.  Handles partial (open) tags too.
+  static String _stripToolMarkup(String text) {
+    // Remove complete <|tool_call_start|>...<|tool_call_end|> blocks.
+    var result = text.replaceAll(
+      RegExp(r'<\|tool_call_start\|>.*?<\|tool_call_end\|>', dotAll: true),
+      '',
+    );
+    // Remove an open (not-yet-closed) block that started but hasn't ended.
+    result = result.replaceAll(RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '');
+    return result.trim();
+  }
 
   void _addMessage(AppMessage msg) {
     messages.add(msg);
