@@ -46,12 +46,12 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> init() async {
     try {
-      statusText = 'Загрузка модели LFM2.5-1.2B…';
+      statusText = 'Загрузка модели LFM2 1.2B…';
       notifyListeners();
 
       _lm = CactusLM();
       await _lm!.downloadModel(
-        model: 'lfm2.5-1.2b-instruct',
+        model: 'lfm2-1.2b-tool',
         downloadProcessCallback: (progress, status, isError) {
           if (isError) {
             errorText = status;
@@ -65,7 +65,7 @@ class ChatProvider extends ChangeNotifier {
         },
       );
       await _lm!.initializeModel(
-        params: CactusInitParams(contextSize: 4096),
+        params: CactusInitParams(model: 'lfm2-1.2b-tool', contextSize: 4096),
       );
 
       isModelReady = true;
