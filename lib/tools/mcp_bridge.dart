@@ -50,7 +50,9 @@ class McpBridge {
   }
 
   CactusTool _convertTool(Tool tool) {
-    final schema = tool.inputSchema as Map<String, dynamic>? ?? {};
+    // tool.inputSchema is a sealed JsonSchema (concrete type: JsonObject, etc.).
+    // Casting directly to Map<String, dynamic> throws at runtime — use toJson().
+    final schema = tool.inputSchema.toJson();
     final props = schema['properties'] as Map<String, dynamic>? ?? {};
     final requiredList = (schema['required'] as List<dynamic>? ?? [])
         .map((e) => e.toString())
