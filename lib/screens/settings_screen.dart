@@ -18,6 +18,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _obscureToken = true;
   bool _savingMcp = false;
 
+  // CalDAV fields
+  final _caldavUrlCtrl = TextEditingController();
+  final _caldavUserCtrl = TextEditingController();
+  final _caldavPassCtrl = TextEditingController();
+  bool _obscureCaldavPass = true;
+  bool _savingCaldav = false;
+
   // Model fields
   final _modelPathCtrl = TextEditingController();
   bool _savingModel = false;
@@ -36,6 +43,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _urlCtrl.text = prefs.getString('mcp_url') ?? '';
       _tokenCtrl.text = prefs.getString('mcp_token') ?? '';
       _modelPathCtrl.text = prefs.getString('model_path') ?? '';
+      _caldavUrlCtrl.text = prefs.getString('caldav_url') ?? '';
+      _caldavUserCtrl.text = prefs.getString('caldav_user') ?? '';
+      _caldavPassCtrl.text = prefs.getString('caldav_password') ?? '';
     });
   }
 
@@ -43,6 +53,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final path =
         await context.read<ChatProvider>().externalModelHintPath();
     if (mounted) setState(() => _extHintPath = path);
+  }
+
+  // ── CalDAV save ────────────────────────────────────────────────────────────
+
+  Future<void> _saveCaldav() async {
+    setState(() => _savingCaldav = true);
+    await context.read<ChatProvider>().saveCaldavConfig(
+          url: _caldavUrlCtrl.text.trim(),
+          user: _caldavUserCtrl.text.trim(),
+          password: _caldavPassCtrl.text,
+        );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('💾 CalDAV настройки сохранены. Перезапустите приложение.'),
+        ),
+      );
+      setState(() => _savingCaldav = false);
+    }
   }
 
   // ── MCP save ───────────────────────────────────────────────────────────────
@@ -86,6 +115,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _urlCtrl.dispose();
     _tokenCtrl.dispose();
     _modelPathCtrl.dispose();
+    _caldavUrlCtrl.dispose();
+    _caldavUserCtrl.dispose();
+    _caldavPassCtrl.dispose();
     super.dispose();
   }
 
@@ -194,6 +226,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   )
                 : const Icon(Icons.cloud_done_outlined),
             label: const Text('Сохранить и подключить'),
+          ),
+
+          const SizedBox(height: 32),
+
+          // ── CalDAV section ─────────────────────────────────────────────────
+          const _SectionHeader('CalDAV сервер'),
+          const SizedBox(height: 4),
+          const Text(
+            'Данные для подключения к вашему CalDAV/CardDAV серверу. '
+            'Передаются модели в системный промпт, чтобы она знала '
+            'правильный URL при создании/изменении событий и задач.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 16),
+          _Field(
+            controller: _caldavUrlCtrl,
+            label: 'CalDAV URL',
+            hint: 'https://nextcloud.example.com/remote.php/dav',
+            keyboardType: TextInputType.url,
+          ),
+          const SizedBox(height: 12),
+          _Field(
+            controller: _caldavUserCtrl,
+            label: 'Имя пользователя',
+            hint: 'username',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _caldavPassCtrl,
+            obscureText: _obscureCaldavPass,
+            decoration: InputDecoration(
+              labelText: 'Пароль',
+              hintText: 'Пароль CalDAV',
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(_obscureCaldavPass
+                    ? Icons.visibility
+                    : Icons.visibility_off),
+                onPressed: () =>
+                    setState(() => _obscureCaldavPass = !_obscureCaldavPass),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _savingCaldav ? null : _saveCaldav,
+            icon: _savingCaldav
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.sync_outlined),
+            label: const Text('Сохранить CalDAV'),
           ),
 
           const SizedBox(height: 32),

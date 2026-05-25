@@ -12,15 +12,34 @@ import '../tools/web_fetch_tool.dart';
 /// Cactus model slug to use.
 const _kModelSlug = 'lfm2-1.2b-tool';
 
-/// System prompt — tells the model its capabilities and persona.
-const _systemPrompt =
-    'You are a helpful personal AI assistant running entirely on the user\'s '
-    'device. You have access to tools: '
-    'web_fetch (fetch any URL and return its content), '
-    'and a set of calendar/contacts/tasks tools via CalDAV (list, create, update, '
-    'delete events, contacts, todos). '
-    'Always respond in the same language the user uses. '
-    'Be concise — you run on a 1.2B parameter model.';
+/// Builds the system prompt, embedding CalDAV connection details when configured
+/// so the model passes correct calendar_url / addressbook_url / credentials.
+String _buildSystemPrompt({
+  String? caldavUrl,
+  String? caldavUser,
+  String? caldavPassword,
+}) {
+  String caldavHint = '';
+  if (caldavUrl != null && caldavUrl.isNotEmpty) {
+    caldavHint = ' The user\'s CalDAV base URL is $caldavUrl.';
+    if (caldavUser != null && caldavUser.isNotEmpty) {
+      caldavHint += ' CalDAV username: $caldavUser.';
+    }
+    if (caldavPassword != null && caldavPassword.isNotEmpty) {
+      caldavHint += ' CalDAV password: $caldavPassword.';
+    }
+    caldavHint +=
+        ' Use these when constructing calendar_url or addressbook_url arguments'
+        ' for CalDAV tools.';
+  }
+  return 'You are a helpful personal AI assistant running entirely on the user\'s '
+      'device. You have access to tools: '
+      'web_fetch (fetch any URL and return its content), '
+      'and a set of calendar/contacts/tasks tools via CalDAV (list, create, update, '
+      'delete events, contacts, todos).$caldavHint '
+      'Always respond in the same language the user uses. '
+      'Be concise — you run on a 1.2B parameter model.';
+}
 
 class ChatProvider extends ChangeNotifier {
   // ── Public state ───────────────────────────────────────────────────────────
@@ -44,9 +63,7 @@ class ChatProvider extends ChangeNotifier {
       ];
 
   /// Conversation history passed to Cactus.
-  final List<ChatMessage> _history = [
-    ChatMessage(role: 'system', content: _systemPrompt),
-  ];
+  final List<ChatMessage> _history = [];
 
   // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -54,6 +71,19 @@ class ChatProvider extends ChangeNotifier {
     try {
       statusText = 'Поиск модели…';
       notifyListeners();
+
+      // Build system prompt with CalDAV credentials if configured.
+      final prefs = await SharedPreferences.getInstance();
+      _history
+        ..clear()
+        ..add(ChatMessage(
+          role: 'system',
+          content: _buildSystemPrompt(
+            caldavUrl: prefs.getString('caldav_url'),
+            caldavUser: prefs.getString('caldav_user'),
+            caldavPassword: prefs.getString('caldav_password'),
+          ),
+        ));
 
       _lm = CactusLM();
 
@@ -388,6 +418,18 @@ class ChatProvider extends ChangeNotifier {
     await prefs.setString('model_path', path.trim());
   }
 
+  /// Saves CalDAV connection details used to build the system prompt.
+  Future<void> saveCaldavConfig({
+    required String url,
+    required String user,
+    required String password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('caldav_url', url.trim());
+    await prefs.setString('caldav_user', user.trim());
+    await prefs.setString('caldav_password', password);
+  }
+
   /// Returns the path where the model should be placed in external storage
   /// for auto-detection on next launch (shown as a hint to the user).
   Future<String> externalModelHintPath() async {
@@ -402,8 +444,8 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  /// Removes LFM tool-call markup from a streaming text so it isn't shown to
-  /// the user while the model is generating.  Handles partial (open) tags too.
+  /// Removes LFM/ChatML special tokens from text before displaying it.
+  /// Handles both complete and still-open (streaming) tool-call blocks.
   static String _stripToolMarkup(String text) {
     // Remove complete <|tool_call_start|>...<|tool_call_end|> blocks.
     var result = text.replaceAll(
@@ -411,7 +453,11 @@ class ChatProvider extends ChangeNotifier {
       '',
     );
     // Remove an open (not-yet-closed) block that started but hasn't ended.
-    result = result.replaceAll(RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '');
+    result = result.replaceAll(
+        RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '');
+    // Remove stray ChatML / LFM control tokens.
+    result = result.replaceAll(
+        RegExp(r'<\|im_end\|>|<\|im_start\|>|<\|tool_call_end\|>'), '');
     return result.trim();
   }
 
