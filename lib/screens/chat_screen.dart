@@ -160,6 +160,34 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
 
+          // Error banner
+          if (chat.errorText != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline,
+                      color: Theme.of(context).colorScheme.onErrorContainer,
+                      size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      chat.errorText!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // Listening banner
           if (_isListening)
             _ListeningBanner(onStop: _toggleListening),

@@ -50,7 +50,20 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
 
       _lm = CactusLM();
-      await _lm!.downloadModel(model: 'lfm2.5-1.2b');
+      await _lm!.downloadModel(
+        model: 'LiquidAI/LFM2.5-1.2B-Instruct',
+        downloadProcessCallback: (progress, status, isError) {
+          if (isError) {
+            errorText = status;
+          } else {
+            final pct = progress != null
+                ? ' ${(progress * 100).toStringAsFixed(0)}%'
+                : '';
+            statusText = 'Загрузка модели$pct';
+          }
+          notifyListeners();
+        },
+      );
       await _lm!.initializeModel(
         params: CactusInitParams(contextSize: 4096),
       );
