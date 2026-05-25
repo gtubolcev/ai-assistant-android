@@ -29,3 +29,6 @@ ios/Runner/GeneratedPluginRegistrant.*
 .env
 *.keystore
 key.properties
+
+# Local temp files (screenshots, downloads, etc.)
+tmp/
