@@ -12,15 +12,22 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // MCP fields
   final _urlCtrl = TextEditingController();
   final _tokenCtrl = TextEditingController();
   bool _obscureToken = true;
-  bool _saving = false;
+  bool _savingMcp = false;
+
+  // Model fields
+  final _modelPathCtrl = TextEditingController();
+  bool _savingModel = false;
+  String _extHintPath = '';
 
   @override
   void initState() {
     super.initState();
     _loadSaved();
+    _loadHintPath();
   }
 
   Future<void> _loadSaved() async {
@@ -28,11 +35,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _urlCtrl.text = prefs.getString('mcp_url') ?? '';
       _tokenCtrl.text = prefs.getString('mcp_token') ?? '';
+      _modelPathCtrl.text = prefs.getString('model_path') ?? '';
     });
   }
 
-  Future<void> _save() async {
-    setState(() => _saving = true);
+  Future<void> _loadHintPath() async {
+    final path =
+        await context.read<ChatProvider>().externalModelHintPath();
+    if (mounted) setState(() => _extHintPath = path);
+  }
+
+  // ── MCP save ───────────────────────────────────────────────────────────────
+
+  Future<void> _saveMcp() async {
+    setState(() => _savingMcp = true);
     await context.read<ChatProvider>().saveMcpConfig(
           url: _urlCtrl.text.trim(),
           token: _tokenCtrl.text.trim(),
@@ -46,7 +62,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               : '⚠️ Не удалось подключиться к MCP'),
         ),
       );
-      setState(() => _saving = false);
+      setState(() => _savingMcp = false);
+    }
+  }
+
+  // ── Model path save ────────────────────────────────────────────────────────
+
+  Future<void> _saveModelPath() async {
+    setState(() => _savingModel = true);
+    await context.read<ChatProvider>().saveModelPath(_modelPathCtrl.text);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('💾 Путь сохранён. Перезапустите приложение для применения.'),
+        ),
+      );
+      setState(() => _savingModel = false);
     }
   }
 
@@ -54,6 +85,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _urlCtrl.dispose();
     _tokenCtrl.dispose();
+    _modelPathCtrl.dispose();
     super.dispose();
   }
 
@@ -64,6 +96,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+
+          // ── Model section ──────────────────────────────────────────────────
+          const _SectionHeader('Модель'),
+          const SizedBox(height: 4),
+          const Text(
+            'Путь к файлу модели (.gguf) или папке с моделью. '
+            'Оставьте пустым для автоматического поиска и загрузки.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _modelPathCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Путь к модели (необязательно)',
+              hintText: '/storage/emulated/0/Android/…/model.gguf',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 6),
+          if (_extHintPath.isNotEmpty)
+            _HintCard(
+              icon: Icons.folder_outlined,
+              text: 'Для автоматического обнаружения поместите модель в:\n$_extHintPath',
+            ),
+          const SizedBox(height: 12),
+          // Current model status
+          Consumer<ChatProvider>(
+            builder: (_, provider, __) => _StatusRow(
+              ok: provider.isModelReady,
+              text: provider.isModelReady
+                  ? 'Модель загружена'
+                  : provider.statusText,
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _savingModel ? null : _saveModelPath,
+            icon: _savingModel
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+            label: const Text('Сохранить путь'),
+          ),
+
+          const SizedBox(height: 32),
+
           // ── MCP section ────────────────────────────────────────────────────
           const _SectionHeader('MCP сервер'),
           const SizedBox(height: 4),
@@ -96,39 +177,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          // MCP connection status
           Consumer<ChatProvider>(
-            builder: (_, provider, __) {
-              final connected = provider.isMcpConnected;
-              return Row(
-                children: [
-                  Icon(
-                    connected ? Icons.circle : Icons.circle_outlined,
-                    size: 12,
-                    color: connected ? Colors.green : Colors.grey,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    provider.statusText,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: connected ? Colors.green : Colors.grey,
-                    ),
-                  ),
-                ],
-              );
-            },
+            builder: (_, provider, __) => _StatusRow(
+              ok: provider.isMcpConnected,
+              text: provider.statusText,
+            ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
           FilledButton.icon(
-            onPressed: _saving ? null : _save,
-            icon: _saving
+            onPressed: _savingMcp ? null : _saveMcp,
+            icon: _savingMcp
                 ? const SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.save_outlined),
+                : const Icon(Icons.cloud_done_outlined),
             label: const Text('Сохранить и подключить'),
           ),
 
@@ -141,7 +205,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.psychology_outlined),
             title: Text('AI Assistant'),
-            subtitle: Text('Офлайн-ассистент на LFM2.5-1.2B\nCactus SDK + MCP (dav-mcp)'),
+            subtitle: Text('Офлайн-ассистент на LFM2 1.2B Tool\nCactus SDK + MCP (dav-mcp)'),
             isThreeLine: true,
           ),
           const ListTile(
@@ -159,6 +223,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
+// ── Shared widgets ─────────────────────────────────────────────────────────────
+
 class _SectionHeader extends StatelessWidget {
   final String title;
   const _SectionHeader(this.title);
@@ -172,6 +238,66 @@ class _SectionHeader extends StatelessWidget {
         fontWeight: FontWeight.w600,
         color: Theme.of(context).colorScheme.primary,
         letterSpacing: 0.5,
+      ),
+    );
+  }
+}
+
+class _StatusRow extends StatelessWidget {
+  final bool ok;
+  final String text;
+  const _StatusRow({required this.ok, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          ok ? Icons.circle : Icons.circle_outlined,
+          size: 12,
+          color: ok ? Colors.green : Colors.grey,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              color: ok ? Colors.green : Colors.grey,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HintCard extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _HintCard({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer.withOpacity(0.4),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: scheme.secondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer),
+            ),
+          ),
+        ],
       ),
     );
   }
