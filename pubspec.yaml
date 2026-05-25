@@ -34,6 +34,9 @@ dependencies:
   # MCP client (StreamableHTTP transport, no archive dependency)
   mcp_dart: ^2.1.1
 
+  # Speech recognition via Android SpeechRecognizer / iOS SFSpeechRecognizer
+  speech_to_text: ^6.6.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

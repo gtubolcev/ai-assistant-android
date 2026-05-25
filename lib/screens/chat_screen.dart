@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:provider/provider.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models/message.dart';
 import '../providers/chat_provider.dart';
@@ -18,19 +19,67 @@ class _ChatScreenState extends State<ChatScreen> {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
 
+  // ── Speech ──────────────────────────────────────────────────────────────────
+  final _speech = SpeechToText();
+  bool _speechAvailable = false;
+  bool _isListening = false;
+
   @override
   void initState() {
     super.initState();
-    // Init model after first frame so Provider is available.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ChatProvider>().init();
+      _initSpeech();
     });
+  }
+
+  Future<void> _initSpeech() async {
+    final available = await _speech.initialize(
+      onError: (_) => setState(() => _isListening = false),
+      onStatus: (status) {
+        if (status == 'done' || status == 'notListening') {
+          setState(() => _isListening = false);
+        }
+      },
+    );
+    setState(() => _speechAvailable = available);
+  }
+
+  Future<void> _toggleListening() async {
+    if (!_speechAvailable) return;
+
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+      return;
+    }
+
+    // Clear field before new dictation
+    _inputController.clear();
+    setState(() => _isListening = true);
+
+    await _speech.listen(
+      onResult: (result) {
+        _inputController.text = result.recognizedWords;
+        // Auto-send on final result if model is ready
+        if (result.finalResult && result.recognizedWords.isNotEmpty) {
+          setState(() => _isListening = false);
+          _send();
+        }
+      },
+      localeId: 'ru_RU',
+      listenOptions: SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+      ),
+    );
   }
 
   @override
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
+    _speech.cancel();
     super.dispose();
   }
 
@@ -59,7 +108,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final chat = context.watch<ChatProvider>();
     final scheme = Theme.of(context).colorScheme;
 
-    // Auto-scroll when new message arrives.
     if (chat.messages.isNotEmpty) _scrollToBottom();
 
     return Scaffold(
@@ -79,7 +127,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          // Model ready indicator
           AnimatedContainer(
             duration: const Duration(milliseconds: 400),
             margin: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
@@ -101,7 +148,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          // ── Message list ────────────────────────────────────────────────
+          // ── Message list ─────────────────────────────────────────────────────
           Expanded(
             child: chat.messages.isEmpty
                 ? _buildEmptyState(scheme)
@@ -113,12 +160,19 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
 
-          // ── Input bar ────────────────────────────────────────────────────
+          // Listening banner
+          if (_isListening)
+            _ListeningBanner(onStop: _toggleListening),
+
+          // ── Input bar ────────────────────────────────────────────────────────
           _InputBar(
             controller: _inputController,
             isLoading: chat.isLoading,
             isModelReady: chat.isModelReady,
+            isListening: _isListening,
+            speechAvailable: _speechAvailable,
             onSend: _send,
+            onMic: _toggleListening,
           ),
         ],
       ),
@@ -138,6 +192,69 @@ class _ChatScreenState extends State<ChatScreen> {
           Text('Запрос выполняется на устройстве',
               style: TextStyle(fontSize: 13, color: scheme.outlineVariant)),
         ],
+      ),
+    );
+  }
+}
+
+// ── Listening banner ───────────────────────────────────────────────────────────
+
+class _ListeningBanner extends StatefulWidget {
+  final VoidCallback onStop;
+  const _ListeningBanner({required this.onStop});
+
+  @override
+  State<_ListeningBanner> createState() => _ListeningBannerState();
+}
+
+class _ListeningBannerState extends State<_ListeningBanner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (_, __) => Container(
+        margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.08 + _pulse.value * 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.red.withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.mic, color: Colors.red, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Слушаю… говорите',
+                style: TextStyle(color: scheme.onSurface, fontSize: 13),
+              ),
+            ),
+            TextButton(
+              onPressed: widget.onStop,
+              child: const Text('Отмена'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -176,7 +293,8 @@ class _MessageBubble extends StatelessWidget {
                 Clipboard.setData(ClipboardData(text: message.content));
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                      content: Text('Скопировано'), duration: Duration(seconds: 1)),
+                      content: Text('Скопировано'),
+                      duration: Duration(seconds: 1)),
                 );
               },
               child: Container(
@@ -199,7 +317,8 @@ class _MessageBubble extends StatelessWidget {
                     : isUser
                         ? Text(
                             message.content,
-                            style: TextStyle(color: scheme.onPrimaryContainer),
+                            style:
+                                TextStyle(color: scheme.onPrimaryContainer),
                           )
                         : MarkdownBody(
                             data: message.content.isEmpty
@@ -284,13 +403,19 @@ class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final bool isLoading;
   final bool isModelReady;
+  final bool isListening;
+  final bool speechAvailable;
   final VoidCallback onSend;
+  final VoidCallback onMic;
 
   const _InputBar({
     required this.controller,
     required this.isLoading,
     required this.isModelReady,
+    required this.isListening,
+    required this.speechAvailable,
     required this.onSend,
+    required this.onMic,
   });
 
   @override
@@ -302,31 +427,54 @@ class _InputBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
         child: Row(
           children: [
+            // ── Mic button ──────────────────────────────────────────────────
+            if (speechAvailable)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: IconButton(
+                  style: IconButton.styleFrom(
+                    backgroundColor: isListening
+                        ? Colors.red.withOpacity(0.15)
+                        : scheme.surfaceContainerHighest,
+                    foregroundColor:
+                        isListening ? Colors.red : scheme.onSurface,
+                  ),
+                  icon: Icon(
+                      isListening ? Icons.mic : Icons.mic_none_outlined),
+                  onPressed: isModelReady && !isLoading ? onMic : null,
+                ),
+              ),
+
+            // ── Text field ─────────────────────────────────────────────────
             Expanded(
               child: TextField(
                 controller: controller,
-                enabled: isModelReady && !isLoading,
+                enabled: isModelReady && !isLoading && !isListening,
                 maxLines: 4,
                 minLines: 1,
                 textCapitalization: TextCapitalization.sentences,
                 keyboardType: TextInputType.multiline,
                 onSubmitted: (_) => onSend(),
                 decoration: InputDecoration(
-                  hintText: isModelReady
-                      ? 'Спроси что-нибудь…'
-                      : 'Загрузка модели…',
+                  hintText: isListening
+                      ? 'Слушаю…'
+                      : isModelReady
+                          ? 'Спроси что-нибудь…'
+                          : 'Загрузка модели…',
                   filled: true,
                   fillColor: scheme.surfaceContainerHighest,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(24),
                     borderSide: BorderSide.none,
                   ),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 18, vertical: 12),
                 ),
               ),
             ),
             const SizedBox(width: 8),
+
+            // ── Send button ────────────────────────────────────────────────
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
               child: isLoading
@@ -343,7 +491,7 @@ class _InputBar extends StatelessWidget {
                     )
                   : IconButton.filled(
                       key: const ValueKey('send'),
-                      onPressed: isModelReady ? onSend : null,
+                      onPressed: isModelReady && !isListening ? onSend : null,
                       icon: const Icon(Icons.send_rounded),
                     ),
             ),
