@@ -21,24 +21,28 @@ String _buildSystemPrompt({
 }) {
   String caldavHint = '';
   if (caldavUrl != null && caldavUrl.isNotEmpty) {
-    caldavHint = ' The user\'s CalDAV base URL is $caldavUrl.';
+    caldavHint = ' CalDAV base URL: $caldavUrl.';
     if (caldavUser != null && caldavUser.isNotEmpty) {
-      caldavHint += ' CalDAV username: $caldavUser.';
+      caldavHint += ' Username: $caldavUser.';
+      // Derive the default calendar URL from base + username if not a full path.
+      final defaultCalUrl = caldavUrl.endsWith('/')
+          ? '${caldavUrl}calendars/$caldavUser/'
+          : '$caldavUrl/calendars/$caldavUser/';
+      caldavHint += ' Default calendars root: $defaultCalUrl.';
     }
     if (caldavPassword != null && caldavPassword.isNotEmpty) {
-      caldavHint += ' CalDAV password: $caldavPassword.';
+      caldavHint += ' Password: $caldavPassword.';
     }
-    caldavHint +=
-        ' Use these when constructing calendar_url or addressbook_url arguments'
-        ' for CalDAV tools.';
+    caldavHint += ' Use list_calendars to discover specific calendar URLs,'
+        ' then use those exact URLs in calendar_url arguments.';
+  } else {
+    caldavHint = ' IMPORTANT: never guess calendar_url — always call'
+        ' list_calendars first to discover available calendars.';
   }
   return 'You are a helpful personal AI assistant running entirely on the user\'s '
       'device. You have access to tools: '
       'web_fetch (fetch any URL and return its content), '
       'and CalDAV tools for calendar/contacts/tasks (list, create, update, delete).$caldavHint '
-      'IMPORTANT for CalDAV: never guess calendar_url or addressbook_url. '
-      'Always call list_calendars or list_addressbooks first to discover '
-      'the correct URLs, then use those URLs in subsequent tool calls. '
       'Always respond in the same language the user uses. '
       'Be concise — you run on a 1.2B parameter model.';
 }
