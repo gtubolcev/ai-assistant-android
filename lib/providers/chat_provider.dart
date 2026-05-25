@@ -51,7 +51,7 @@ class ChatProvider extends ChangeNotifier {
 
       _lm = CactusLM();
       await _lm!.downloadModel(
-        model: 'LiquidAI/LFM2.5-1.2B-Instruct',
+        model: 'lfm2.5-1.2b-instruct',
         downloadProcessCallback: (progress, status, isError) {
           if (isError) {
             errorText = status;
