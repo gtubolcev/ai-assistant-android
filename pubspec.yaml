@@ -31,8 +31,8 @@ dependencies:
   # Connectivity check (for cloud fallback)
   connectivity_plus: ^6.0.3
 
-  # XML parsing for CalDAV responses
-  xml: ^6.5.0
+  # MCP client (StreamableHTTP transport, no archive dependency)
+  mcp_dart: ^2.1.1
 
 dev_dependencies:
   flutter_test:

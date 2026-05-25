@@ -13,10 +13,8 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _urlCtrl = TextEditingController();
-  final _userCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
-  final _pathCtrl = TextEditingController();
-  bool _obscurePass = true;
+  final _tokenCtrl = TextEditingController();
+  bool _obscureToken = true;
   bool _saving = false;
 
   @override
@@ -28,24 +26,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSaved() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _urlCtrl.text = prefs.getString('caldav_url') ?? '';
-      _userCtrl.text = prefs.getString('caldav_user') ?? '';
-      _passCtrl.text = prefs.getString('caldav_pass') ?? '';
-      _pathCtrl.text = prefs.getString('caldav_path') ?? '/calendars/';
+      _urlCtrl.text = prefs.getString('mcp_url') ?? '';
+      _tokenCtrl.text = prefs.getString('mcp_token') ?? '';
     });
   }
 
   Future<void> _save() async {
     setState(() => _saving = true);
-    await context.read<ChatProvider>().saveCalDavConfig(
+    await context.read<ChatProvider>().saveMcpConfig(
           url: _urlCtrl.text.trim(),
-          user: _userCtrl.text.trim(),
-          pass: _passCtrl.text,
-          path: _pathCtrl.text.trim(),
+          token: _tokenCtrl.text.trim(),
         );
     if (mounted) {
+      final connected = context.read<ChatProvider>().isMcpConnected;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настройки сохранены')),
+        SnackBar(
+          content: Text(connected
+              ? '✅ Подключено к MCP серверу'
+              : '⚠️ Не удалось подключиться к MCP'),
+        ),
       );
       setState(() => _saving = false);
     }
@@ -54,9 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _urlCtrl.dispose();
-    _userCtrl.dispose();
-    _passCtrl.dispose();
-    _pathCtrl.dispose();
+    _tokenCtrl.dispose();
     super.dispose();
   }
 
@@ -67,45 +64,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ── CalDAV section ──────────────────────────────────────────────
-          const _SectionHeader('CalDAV — календарь и задачи'),
+          // ── MCP section ────────────────────────────────────────────────────
+          const _SectionHeader('MCP сервер'),
           const SizedBox(height: 4),
           const Text(
-            'Подключи свой Nextcloud / Radicale / Baikal для управления '
-            'событиями и задачами через ассистента.',
+            'Адрес dav-mcp сервера, который предоставляет инструменты '
+            'для работы с календарём, контактами и задачами (CalDAV/CardDAV).',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 16),
           _Field(
             controller: _urlCtrl,
-            label: 'Адрес сервера',
-            hint: 'https://nextcloud.example.com/remote.php/dav',
+            label: 'URL MCP сервера',
+            hint: 'https://mcp.rakulka.ru/mcp',
             keyboardType: TextInputType.url,
           ),
           const SizedBox(height: 12),
-          _Field(
-            controller: _userCtrl,
-            label: 'Имя пользователя',
-          ),
-          const SizedBox(height: 12),
           TextField(
-            controller: _passCtrl,
-            obscureText: _obscurePass,
+            controller: _tokenCtrl,
+            obscureText: _obscureToken,
             decoration: InputDecoration(
-              labelText: 'Пароль',
+              labelText: 'Bearer Token',
+              hintText: 'Секретный токен доступа',
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 icon: Icon(
-                    _obscurePass ? Icons.visibility : Icons.visibility_off),
-                onPressed: () => setState(() => _obscurePass = !_obscurePass),
+                    _obscureToken ? Icons.visibility : Icons.visibility_off),
+                onPressed: () =>
+                    setState(() => _obscureToken = !_obscureToken),
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          _Field(
-            controller: _pathCtrl,
-            label: 'Путь к календарю',
-            hint: '/calendars/username/personal/',
+          const SizedBox(height: 8),
+          // MCP connection status
+          Consumer<ChatProvider>(
+            builder: (_, provider, __) {
+              final connected = provider.isMcpConnected;
+              return Row(
+                children: [
+                  Icon(
+                    connected ? Icons.circle : Icons.circle_outlined,
+                    size: 12,
+                    color: connected ? Colors.green : Colors.grey,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    provider.statusText,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: connected ? Colors.green : Colors.grey,
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 24),
           FilledButton.icon(
@@ -117,19 +129,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.save_outlined),
-            label: const Text('Сохранить'),
+            label: const Text('Сохранить и подключить'),
           ),
 
           const SizedBox(height: 32),
 
-          // ── About ───────────────────────────────────────────────────────
+          // ── About ───────────────────────────────────────────────────────────
           const _SectionHeader('О приложении'),
           const SizedBox(height: 8),
           const ListTile(
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.psychology_outlined),
             title: Text('AI Assistant'),
-            subtitle: Text('Офлайн-ассистент на LFM2.5-1.2B\nCactus SDK + MCP'),
+            subtitle: Text('Офлайн-ассистент на LFM2.5-1.2B\nCactus SDK + MCP (dav-mcp)'),
             isThreeLine: true,
           ),
           const ListTile(
@@ -137,7 +149,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: Icon(Icons.lock_outline),
             title: Text('Приватность'),
             subtitle: Text(
-                'Модель работает полностью на устройстве.\nДанные не покидают телефон.'),
+                'LLM работает полностью на устройстве.\n'
+                'Данные календаря хранятся на твоём сервере.'),
             isThreeLine: true,
           ),
         ],

@@ -3,22 +3,16 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
-import '../tools/caldav_tool.dart';
+import '../tools/mcp_bridge.dart';
 import '../tools/web_fetch_tool.dart';
-
-/// All available tools — passed to Cactus for tool calling.
-final _allTools = <CactusTool>[
-  webFetchTool,
-  listEventsTool,
-  createEventTool,
-  deleteEventTool,
-];
 
 /// System prompt — tells the model its capabilities and persona.
 const _systemPrompt =
     'You are a helpful personal AI assistant running entirely on the user\'s '
-    'device. You have access to tools: web_fetch (fetch any URL), '
-    'caldav_list_events, caldav_create_event, caldav_delete_event. '
+    'device. You have access to tools: '
+    'web_fetch (fetch any URL and return its content), '
+    'and a set of calendar/contacts/tasks tools via CalDAV (list, create, update, '
+    'delete events, contacts, todos). '
     'Always respond in the same language the user uses. '
     'Be concise — you run on a 1.2B parameter model.';
 
@@ -30,13 +24,20 @@ class ChatProvider extends ChangeNotifier {
   bool isModelReady = false;
   String statusText = 'Загрузка модели…';
   String? errorText;
+  bool get isMcpConnected => _mcp?.isConnected ?? false;
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
   CactusLM? _lm;
-  CalDavExecutor? _calDav;
+  McpBridge? _mcp;
 
-  /// Conversation history passed to Cactus (system + alternating user/assistant).
+  /// Tools available to Cactus: web_fetch (local) + all MCP tools.
+  List<CactusTool> get _allTools => [
+        webFetchTool,
+        ...(_mcp?.tools ?? []),
+      ];
+
+  /// Conversation history passed to Cactus.
   final List<ChatMessage> _history = [
     ChatMessage(role: 'system', content: _systemPrompt),
   ];
@@ -54,29 +55,43 @@ class ChatProvider extends ChangeNotifier {
         params: CactusInitParams(contextSize: 4096),
       );
 
-      // Load CalDAV config from SharedPreferences (set via settings screen).
-      final prefs = await SharedPreferences.getInstance();
-      final caldavUrl = prefs.getString('caldav_url');
-      final caldavUser = prefs.getString('caldav_user');
-      final caldavPass = prefs.getString('caldav_pass');
-      final caldavPath = prefs.getString('caldav_path') ?? '/calendars/';
-
-      if (caldavUrl != null && caldavUser != null && caldavPass != null) {
-        _calDav = CalDavExecutor(CalDavConfig(
-          serverUrl: caldavUrl,
-          username: caldavUser,
-          password: caldavPass,
-          calendarPath: caldavPath,
-        ));
-      }
-
       isModelReady = true;
       statusText = 'Модель готова';
+      notifyListeners();
+
+      // Connect to MCP server (non-blocking — failure is recoverable).
+      await _connectMcp();
     } catch (e) {
       errorText = 'Ошибка инициализации: $e';
       statusText = 'Ошибка';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _connectMcp() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString('mcp_url');
+    final token = prefs.getString('mcp_token');
+
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      statusText = 'Модель готова (MCP не настроен)';
+      notifyListeners();
+      return;
     }
 
+    try {
+      statusText = 'Подключение к MCP…';
+      notifyListeners();
+
+      await _mcp?.disconnect();
+      _mcp = McpBridge(serverUrl: url, bearerToken: token);
+      await _mcp!.connect();
+
+      statusText = 'Готово (${_mcp!.tools.length} инструментов)';
+    } catch (e) {
+      statusText = 'Модель готова (MCP недоступен: $e)';
+      _mcp = null;
+    }
     notifyListeners();
   }
 
@@ -85,18 +100,14 @@ class ChatProvider extends ChangeNotifier {
   Future<void> sendMessage(String text) async {
     if (text.trim().isEmpty || isLoading || !isModelReady) return;
 
-    // Add user message to UI.
     _addMessage(AppMessage(
       id: _uid(),
       role: MessageRole.user,
       content: text.trim(),
       timestamp: DateTime.now(),
     ));
-
-    // Add user turn to LLM history.
     _history.add(ChatMessage(role: 'user', content: text.trim()));
 
-    // Placeholder assistant message (will be updated during streaming).
     final assistantId = _uid();
     _addMessage(AppMessage(
       id: assistantId,
@@ -124,7 +135,6 @@ class ChatProvider extends ChangeNotifier {
   Future<void> _runAgentLoop(String assistantId) async {
     final lm = _lm!;
 
-    // ── First pass: streaming to fill UI in real-time ──────────────────────
     final streamResult = await lm.generateCompletionStream(
       messages: List.from(_history),
       params: CactusCompletionParams(
@@ -140,18 +150,13 @@ class ChatProvider extends ChangeNotifier {
       _updateMessage(assistantId, buffer.toString(), MessageStatus.sending);
     }
 
-    // Get final result (includes parsed tool calls).
     final finalResult = await streamResult.result;
 
     if (finalResult.toolCalls.isNotEmpty) {
-      // ── Tool call round ────────────────────────────────────────────────
-      // Add assistant's (possibly partial) thinking text to history.
       if (buffer.isNotEmpty) {
         _history.add(ChatMessage(role: 'assistant', content: buffer.toString()));
       }
 
-      // Execute all tool calls.
-      final toolResults = <String>[];
       for (final call in finalResult.toolCalls) {
         _updateMessage(
           assistantId,
@@ -161,16 +166,10 @@ class ChatProvider extends ChangeNotifier {
         );
 
         final result = await _executeTool(call);
-        toolResults.add('[${ call.name}] $result');
 
-        // Add tool result message to history.
-        _history.add(ChatMessage(
-          role: 'tool',
-          content: result,
-        ));
+        _history.add(ChatMessage(role: 'tool', content: result));
       }
 
-      // ── Second pass: final answer after tools ──────────────────────────
       final followUp = await lm.generateCompletion(
         messages: List.from(_history),
         params: CactusCompletionParams(temperature: 0.7, maxTokens: 512),
@@ -180,7 +179,6 @@ class ChatProvider extends ChangeNotifier {
       _history.add(ChatMessage(role: 'assistant', content: finalText));
       _updateMessage(assistantId, finalText, MessageStatus.done);
     } else {
-      // ── No tool calls: use streamed text directly ──────────────────────
       final text = buffer.toString();
       _history.add(ChatMessage(role: 'assistant', content: text));
       _updateMessage(assistantId, text, MessageStatus.done);
@@ -190,21 +188,33 @@ class ChatProvider extends ChangeNotifier {
   // ── Tool executor ─────────────────────────────────────────────────────────
 
   Future<String> _executeTool(ToolCall call) async {
-    switch (call.name) {
-      case 'web_fetch':
-        return executeWebFetch(call.arguments);
-
-      case 'caldav_list_events':
-      case 'caldav_create_event':
-      case 'caldav_delete_event':
-        if (_calDav == null) {
-          return 'CalDAV не настроен. Укажи адрес сервера в настройках.';
-        }
-        return _calDav!.execute(call.name, call.arguments);
-
-      default:
-        return 'Unknown tool: ${call.name}';
+    // web_fetch is handled locally
+    if (call.name == 'web_fetch') {
+      return executeWebFetch(call.arguments);
     }
+
+    // All other tools go through MCP
+    final mcp = _mcp;
+    if (mcp == null || !mcp.isConnected) {
+      return 'MCP недоступен. Проверь настройки сервера.';
+    }
+
+    return mcp.executeTool(
+      call.name,
+      Map<String, dynamic>.from(call.arguments),
+    );
+  }
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+
+  Future<void> saveMcpConfig({
+    required String url,
+    required String token,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('mcp_url', url);
+    await prefs.setString('mcp_token', token);
+    await _connectMcp();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -223,31 +233,9 @@ class ChatProvider extends ChangeNotifier {
 
   String _uid() => DateTime.now().microsecondsSinceEpoch.toString();
 
-  // ── Settings ──────────────────────────────────────────────────────────────
-
-  Future<void> saveCalDavConfig({
-    required String url,
-    required String user,
-    required String pass,
-    required String path,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('caldav_url', url);
-    await prefs.setString('caldav_user', user);
-    await prefs.setString('caldav_pass', pass);
-    await prefs.setString('caldav_path', path);
-
-    _calDav = CalDavExecutor(CalDavConfig(
-      serverUrl: url,
-      username: user,
-      password: pass,
-      calendarPath: path,
-    ));
-    notifyListeners();
-  }
-
   @override
   void dispose() {
+    _mcp?.disconnect();
     _lm?.unload();
     _lm = null;
     super.dispose();
