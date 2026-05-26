@@ -29,12 +29,17 @@ class CactusModelInfo {
   final String name;
   final int sizeMb;
   final String description;
+  /// Whether this model supports Cactus tool-calling format.
+  /// FunctionGemma uses a different format and crashes with code -1 when tools
+  /// are passed — mark it false so we skip tools for it entirely.
+  final bool supportsToolCalling;
 
   const CactusModelInfo({
     required this.slug,
     required this.name,
     required this.sizeMb,
     required this.description,
+    this.supportsToolCalling = true,
   });
 }
 
@@ -43,7 +48,8 @@ const kAvailableCactusModels = <CactusModelInfo>[
     slug: 'functiongemma-270m',
     name: 'FunctionGemma 3 270M',
     sizeMb: 182,
-    description: 'Самая компактная, быстрее всего отвечает',
+    description: 'Компактная, только текст (без tool calling)',
+    supportsToolCalling: false,
   ),
   CactusModelInfo(
     slug: 'qwen3-0.6',
@@ -427,8 +433,14 @@ class ChatProvider extends ChangeNotifier {
     final completedTools = <String>[];
     _stopRequested = false;
 
-    // Warn early if MCP not connected.
-    if (_allMcpTools.isEmpty) {
+    // Check whether the active model supports Cactus tool-calling format.
+    final activeModelInfo = kAvailableCactusModels
+        .where((m) => m.slug == _activeModelSlug)
+        .firstOrNull;
+    final modelSupportsTools = activeModelInfo?.supportsToolCalling ?? true;
+
+    // Warn early if MCP not connected (only relevant when tools are supported).
+    if (modelSupportsTools && _allMcpTools.isEmpty) {
       debugPrint('[AI] WARNING: MCP tools empty — server not configured?');
       _updateMessage(
         assistantId,
@@ -438,7 +450,7 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
-    final tools = _toolsForMessage(userMessage);
+    final tools = modelSupportsTools ? _toolsForMessage(userMessage) : <CactusTool>[];
     debugPrint('[AI] msg="$userMessage" tools=${tools.map((t) => t.name).toList()}');
 
     for (int iter = 0; iter < maxIterations; iter++) {
