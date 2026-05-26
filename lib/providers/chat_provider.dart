@@ -55,11 +55,77 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Tools available to Cactus: web_fetch (local) + all MCP tools.
-  List<CactusTool> get _allTools => [
-        webFetchTool,
-        ...(_mcp?.tools ?? []),
-      ];
+  /// Full MCP tool list (cached from connection).
+  List<CactusTool> get _allMcpTools => _mcp?.tools ?? [];
+
+  /// Returns a context-filtered tool list for the given user message.
+  ///
+  /// A 1.2B model can't reliably choose from 134 tools — show only the
+  /// relevant subset (≤ ~20) based on keywords in the message.
+  List<CactusTool> _toolsFor(String userMessage) {
+    final m = userMessage.toLowerCase();
+
+    // ── Keyword groups (EN + RU) ───────────────────────────────────────────
+    final wantsCalendar = _kw(m, [
+      'calendar', 'event', 'meeting', 'schedule', 'remind',
+      'calendars', 'upcoming', 'appointment',
+      'календар', 'событи', 'встреч', 'расписан', 'напомин',
+    ]);
+    final wantsTodo = _kw(m, [
+      'task', 'todo', 'tasks', 'todos',
+      'задач', 'задание', 'список дел',
+    ]);
+    final wantsContact = _kw(m, [
+      'contact', 'address', 'phone', 'email',
+      'контакт', 'адрес', 'телефон', 'почт',
+    ]);
+    final wantsNote = _kw(m, [
+      'note', 'notes',
+      'заметк', 'запис',
+    ]);
+    final wantsFile = _kw(m, [
+      'file', 'folder', 'upload', 'download', 'document',
+      'файл', 'папк', 'загруз', 'документ',
+    ]);
+    final wantsDeck = _kw(m, [
+      'deck', 'board', 'kanban', 'card', 'stack',
+      'борд', 'канбан', 'карточк',
+    ]);
+
+    // Collect matching prefixes
+    final prefixes = <String>[];
+    if (wantsCalendar || wantsTodo) prefixes.add('nc_calendar');
+    if (wantsContact) prefixes.add('nc_contacts');
+    if (wantsNote) prefixes.add('nc_notes');
+    if (wantsFile) prefixes.add('nc_files');
+    if (wantsDeck) prefixes.add('nc_deck');
+
+    List<CactusTool> mcpSelected;
+    if (prefixes.isEmpty) {
+      // No keyword match → show a curated core set (most common operations)
+      const core = {
+        'nc_calendar_list_calendars',
+        'nc_calendar_get_upcoming_events',
+        'nc_calendar_list_events',
+        'nc_calendar_create_event',
+        'nc_calendar_list_todos',
+        'nc_calendar_create_todo',
+        'nc_contacts_list_contacts',
+        'nc_notes_list_notes',
+        'nc_notes_create_note',
+      };
+      mcpSelected = _allMcpTools.where((t) => core.contains(t.name)).toList();
+    } else {
+      mcpSelected = _allMcpTools
+          .where((t) => prefixes.any((p) => t.name.startsWith(p)))
+          .toList();
+    }
+
+    return [webFetchTool, ...mcpSelected];
+  }
+
+  static bool _kw(String msg, List<String> words) =>
+      words.any((w) => msg.contains(w));
 
   /// Conversation history passed to Cactus.
   final List<ChatMessage> _history = [];
@@ -333,7 +399,7 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _runAgentLoop(assistantId);
+      await _runAgentLoop(assistantId, tools: _toolsFor(text.trim()));
     } catch (e) {
       _updateMessage(assistantId, 'Ошибка: $e', MessageStatus.error);
     } finally {
@@ -347,7 +413,8 @@ class ChatProvider extends ChangeNotifier {
   /// Multi-turn agent loop: keeps calling tools until the model produces a
   /// plain text reply.  Each iteration generates with full tool access so the
   /// model can chain calls (e.g. list_calendars → create_todo).
-  Future<void> _runAgentLoop(String assistantId) async {
+  Future<void> _runAgentLoop(String assistantId,
+      {List<CactusTool> tools = const []}) async {
     final lm = _lm!;
     const maxIterations = 8; // safety cap
     final completedTools = <String>[]; // labels shown while waiting
@@ -369,7 +436,7 @@ class ChatProvider extends ChangeNotifier {
       final streamResult = await lm.generateCompletionStream(
         messages: List.from(_history),
         params: CactusCompletionParams(
-          tools: _allTools,
+          tools: tools,
           temperature: 0.7,
           maxTokens: 512,
         ),
