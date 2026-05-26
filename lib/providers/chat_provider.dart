@@ -560,6 +560,9 @@ class ChatProvider extends ChangeNotifier {
     final calledToolNames = <String>{};   // tracks which MCP tools were executed
     _stopRequested = false;
 
+    final intent = _detectIntent(userMessage.toLowerCase());
+    debugPrint('[AI] intent="$intent" msg="$userMessage"');
+
     for (int iter = 0; iter < maxIterations; iter++) {
       if (_stopRequested) {
         _stopRequested = false;
@@ -573,6 +576,7 @@ class ChatProvider extends ChangeNotifier {
 
       // One tool per iteration — model always gets exactly 1 tool to choose from.
       final tools = _nextTool(userMessage, calledToolNames);
+      debugPrint('[AI] iter=$iter tools=${tools.map((t) => t.name).toList()} called=$calledToolNames');
 
       final streamResult = await lm.generateCompletionStream(
         messages: List.from(_history),
@@ -636,6 +640,8 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
+      debugPrint('[AI] iter=$iter success=${iterResult.success} toolCalls=${iterResult.toolCalls.map((c) => "${c.name}(${c.arguments})").toList()} response="${iterResult.response?.substring(0, iterResult.response!.length.clamp(0, 120))}"');
+
       if (iterResult.toolCalls.isEmpty) {
         final text = buffer.toString();
         _history.add(ChatMessage(role: 'assistant', content: text));
@@ -660,6 +666,7 @@ class ChatProvider extends ChangeNotifier {
           MessageStatus.sending,
         );
         final toolResult = await _executeTool(call);
+        debugPrint('[AI] tool ${call.name} result="${toolResult.substring(0, toolResult.length.clamp(0, 200))}"');
         completedTools[completedTools.length - 1] = '🔧 ${call.name} ✓';
         calledToolNames.add(call.name);   // advance the sequence for next iter
         _history.add(ChatMessage(role: 'tool', content: toolResult));
