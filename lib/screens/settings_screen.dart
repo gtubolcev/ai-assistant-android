@@ -1,9 +1,23 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/chat_provider.dart';
+
+/// Keys that are saved/restored in settings backup.
+const _kBackupKeys = [
+  'mcp_url',
+  'mcp_user',
+  'mcp_password',
+  'mcp_token',
+  'caldav_url',
+  'caldav_user',
+  'caldav_password',
+];
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -32,6 +46,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Model fields
   bool _pickingModel = false;
   String _modelFileName = '';
+
+  // Backup fields
+  bool _exporting = false;
+  bool _importing = false;
 
   @override
   void initState() {
@@ -101,14 +119,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ── Model file picker ──────────────────────────────────────────────────────
 
   Future<void> _pickModel() async {
+    // Use FileType.any — Android doesn't know .gguf MIME type, so
+    // FileType.custom with allowedExtensions silently shows nothing.
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['gguf'],
+      type: FileType.any,
       allowCompression: false,
     );
 
     final path = result?.files.single.path;
     if (path == null || !mounted) return;
+
+    if (!path.toLowerCase().endsWith('.gguf')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Выберите файл с расширением .gguf')),
+      );
+      return;
+    }
 
     setState(() {
       _pickingModel = true;
@@ -127,6 +153,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
       setState(() => _pickingModel = false);
+    }
+  }
+
+  // ── Settings backup / restore ──────────────────────────────────────────────
+
+  Future<void> _exportSettings() async {
+    setState(() => _exporting = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = <String, String>{};
+      for (final key in _kBackupKeys) {
+        final v = prefs.getString(key);
+        if (v != null) data[key] = v;
+      }
+      final json = const JsonEncoder.withIndent('  ').convert(data);
+      final bytes = utf8.encode(json);
+
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Сохранить бэкап настроек',
+        fileName: 'ai_assistant_backup.json',
+        bytes: Uint8List.fromList(bytes),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(savedPath != null
+                ? '✅ Бэкап сохранён'
+                : 'Сохранение отменено'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('⚠️ Ошибка экспорта: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  Future<void> _importSettings() async {
+    setState(() => _importing = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+
+      final bytes = result?.files.single.bytes;
+      if (bytes == null || !mounted) {
+        setState(() => _importing = false);
+        return;
+      }
+
+      final data = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      final prefs = await SharedPreferences.getInstance();
+      for (final key in _kBackupKeys) {
+        if (data.containsKey(key)) {
+          await prefs.setString(key, data[key] as String);
+        }
+      }
+
+      await _loadSaved();
+
+      if (mounted) {
+        // Reconnect MCP with restored credentials.
+        await context.read<ChatProvider>().saveMcpConfig(
+              url: prefs.getString('mcp_url') ?? '',
+              user: prefs.getString('mcp_user') ?? '',
+              password: prefs.getString('mcp_password') ?? '',
+              token: prefs.getString('mcp_token') ?? '',
+            );
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Настройки восстановлены и применены')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('⚠️ Ошибка импорта: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
     }
   }
 
@@ -150,6 +264,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
 
+          // ── Backup section ─────────────────────────────────────────────────
+          const _SectionHeader('Бэкап настроек'),
+          const SizedBox(height: 4),
+          const Text(
+            'Сохраните все настройки MCP и CalDAV в файл, '
+            'чтобы восстановить их после переустановки.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: (_exporting || _importing) ? null : _exportSettings,
+                  icon: _exporting
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.upload_outlined),
+                  label: const Text('Экспорт'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: (_exporting || _importing) ? null : _importSettings,
+                  icon: _importing
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.download_outlined),
+                  label: const Text('Импорт'),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 32),
+
           // ── Model section ──────────────────────────────────────────────────
           const _SectionHeader('Модель'),
           const SizedBox(height: 4),
@@ -159,7 +312,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 12),
-          // Current model status
           Consumer<ChatProvider>(
             builder: (_, provider, __) => _StatusRow(
               ok: provider.isModelReady,
@@ -334,7 +486,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.psychology_outlined),
             title: Text('AI Assistant'),
-            subtitle: Text('Офлайн-ассистент на LFM2 1.2B Tool\nCactus SDK + MCP (dav-mcp)'),
+            subtitle: Text('Офлайн-ассистент на LFM2 1.2B Tool\nCactus SDK + MCP (nextcloud-mcp)'),
             isThreeLine: true,
           ),
           const ListTile(
