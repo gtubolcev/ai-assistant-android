@@ -111,66 +111,96 @@ class ChatProvider extends ChangeNotifier {
 
   /// Returns a context-filtered tool list for the given user message.
   ///
-  /// A small model can't reliably choose from 134 tools — show only the
-  /// relevant subset (≤ ~20) based on keywords in the message.
+  /// Small models (1-2B) fail with many tools — keep to ≤5 per request.
+  /// Intent-based: match specific action + return only the tools needed for it.
   List<CactusTool> _toolsFor(String userMessage) {
     final m = userMessage.toLowerCase();
 
-    // ── Keyword groups (EN + RU) ───────────────────────────────────────────
-    final wantsCalendar = _kw(m, [
-      'calendar', 'event', 'meeting', 'schedule', 'remind',
-      'calendars', 'upcoming', 'appointment',
-      'календар', 'событи', 'встреч', 'расписан', 'напомин',
-    ]);
-    final wantsTodo = _kw(m, [
-      'task', 'todo', 'tasks', 'todos',
-      'задач', 'задание', 'список дел',
-    ]);
-    final wantsContact = _kw(m, [
-      'contact', 'address', 'phone', 'email',
-      'контакт', 'адрес', 'телефон', 'почт',
-    ]);
-    final wantsNote = _kw(m, [
-      'note', 'notes',
-      'заметк', 'запис',
-    ]);
-    final wantsFile = _kw(m, [
-      'file', 'folder', 'upload', 'download', 'document',
-      'файл', 'папк', 'загруз', 'документ',
-    ]);
-    final wantsDeck = _kw(m, [
-      'deck', 'board', 'kanban', 'card', 'stack',
-      'борд', 'канбан', 'карточк',
-    ]);
+    // ── Intent matchers (EN + RU) ─────────────────────────────────────────
+    // Returns named tools from _allMcpTools + always includes web_fetch.
 
-    final prefixes = <String>[];
-    if (wantsCalendar || wantsTodo) prefixes.add('nc_calendar');
-    if (wantsContact) prefixes.add('nc_contacts');
-    if (wantsNote) prefixes.add('nc_notes');
-    if (wantsFile) prefixes.add('nc_files');
-    if (wantsDeck) prefixes.add('nc_deck');
-
-    List<CactusTool> mcpSelected;
-    if (prefixes.isEmpty) {
-      const core = {
-        'nc_calendar_list_calendars',
-        'nc_calendar_get_upcoming_events',
-        'nc_calendar_list_events',
-        'nc_calendar_create_event',
-        'nc_calendar_list_todos',
-        'nc_calendar_create_todo',
-        'nc_contacts_list_contacts',
-        'nc_notes_list_notes',
-        'nc_notes_create_note',
-      };
-      mcpSelected = _allMcpTools.where((t) => core.contains(t.name)).toList();
-    } else {
-      mcpSelected = _allMcpTools
-          .where((t) => prefixes.any((p) => t.name.startsWith(p)))
-          .toList();
+    // Calendar intents
+    if (_kw(m, ['list calendar', 'show calendar', 'what calendar',
+                'список календар', 'какие календар', 'покажи календар'])) {
+      return _pick(['nc_calendar_list_calendars']);
+    }
+    if (_kw(m, ['upcoming', 'today', 'tomorrow', 'this week', 'schedule',
+                'ближайш', 'сегодня', 'завтра', 'на неделе', 'расписан'])) {
+      return _pick(['nc_calendar_list_calendars',
+                    'nc_calendar_get_upcoming_events']);
+    }
+    if (_kw(m, ['create event', 'add event', 'new event', 'new meeting',
+                'создай событи', 'добавь событи', 'новое событи', 'запланируй'])) {
+      return _pick(['nc_calendar_list_calendars', 'nc_calendar_create_event']);
+    }
+    if (_kw(m, ['event', 'meeting', 'appointment', 'calendar',
+                'событи', 'встреч', 'встречу', 'календар'])) {
+      return _pick(['nc_calendar_list_calendars',
+                    'nc_calendar_get_upcoming_events',
+                    'nc_calendar_create_event',
+                    'nc_calendar_list_events']);
     }
 
-    return [webFetchTool, ...mcpSelected];
+    // Todo/task intents
+    if (_kw(m, ['create task', 'add task', 'new task', 'new todo',
+                'создай задач', 'добавь задач', 'новая задач'])) {
+      return _pick(['nc_calendar_list_calendars', 'nc_calendar_create_todo']);
+    }
+    if (_kw(m, ['task', 'todo', 'задач', 'задание', 'список дел'])) {
+      return _pick(['nc_calendar_list_todos', 'nc_calendar_create_todo',
+                    'nc_calendar_list_calendars']);
+    }
+
+    // Contacts
+    if (_kw(m, ['contact', 'phone', 'email', 'address book',
+                'контакт', 'телефон', 'адресн'])) {
+      return _pick(['nc_contacts_list_contacts', 'nc_contacts_get_contact',
+                    'nc_contacts_create_contact']);
+    }
+
+    // Notes
+    if (_kw(m, ['create note', 'add note', 'new note', 'write note',
+                'создай заметк', 'новая заметк', 'запиши'])) {
+      return _pick(['nc_notes_create_note']);
+    }
+    if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
+      return _pick(['nc_notes_list_notes', 'nc_notes_create_note']);
+    }
+
+    // Files
+    if (_kw(m, ['file', 'folder', 'upload', 'download', 'document',
+                'файл', 'папк', 'загруз', 'документ'])) {
+      return _pick(['nc_files_list_files', 'nc_files_upload_file',
+                    'nc_files_get_file_info']);
+    }
+
+    // Deck/kanban
+    if (_kw(m, ['deck', 'board', 'kanban', 'card',
+                'борд', 'канбан', 'карточк'])) {
+      return _pick(['nc_deck_list_boards', 'nc_deck_create_card',
+                    'nc_deck_list_cards']);
+    }
+
+    // Web fetch
+    if (_kw(m, ['http', 'https', 'url', 'fetch', 'page', 'site', 'website',
+                'сайт', 'страниц'])) {
+      return [webFetchTool];
+    }
+
+    // Default: smallest useful set — just calendars + web
+    return _pick(['nc_calendar_list_calendars',
+                  'nc_calendar_get_upcoming_events',
+                  'nc_calendar_list_todos']);
+  }
+
+  /// Picks named tools from _allMcpTools; always prepends web_fetch.
+  List<CactusTool> _pick(List<String> names) {
+    final byName = {for (final t in _allMcpTools) t.name: t};
+    final tools = names
+        .map((n) => byName[n])
+        .whereType<CactusTool>()
+        .toList();
+    return [webFetchTool, ...tools];
   }
 
   static bool _kw(String msg, List<String> words) =>
