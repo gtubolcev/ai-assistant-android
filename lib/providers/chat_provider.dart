@@ -310,6 +310,7 @@ class ChatProvider extends ChangeNotifier {
         'они хранятся на CDN Cactus в нужном формате.';
     notifyListeners();
     return;
+  }
 
   Future<bool> _dirHasFiles(Directory dir) async {
     if (!await dir.exists()) return false;
