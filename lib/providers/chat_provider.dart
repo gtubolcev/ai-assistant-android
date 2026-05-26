@@ -583,15 +583,27 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Clear any stale cache before importing the new file.
+      // ── Copy file ──────────────────────────────────────────────────────────
       if (await internalDir.exists()) await internalDir.delete(recursive: true);
       await _importModelToInternal(File(filePath), internalDir);
+
+      // Verify the file actually landed in the internal dir.
+      final files = await internalDir.list().toList();
+      if (files.isEmpty) {
+        throw Exception('Файл скопирован, но директория пуста — '
+            'проверьте разрешения или выберите файл снова');
+      }
+      debugPrint('Imported: ${files.map((f) => f.path).join(', ')}');
+
       await prefs.setString(_kModelSourceKey, filePath);
 
+      // ── Re-initialise Cactus with a fresh instance ─────────────────────────
+      // Must recreate CactusLM — calling initializeModel on an already-loaded
+      // instance is unreliable.
       statusText = 'Инициализация модели…';
       notifyListeners();
 
-      _lm ??= CactusLM();
+      _lm = CactusLM(); // always fresh
       await _lm!.initializeModel(
         params: CactusInitParams(model: _kModelSlug, contextSize: 4096),
       );
@@ -601,7 +613,11 @@ class ChatProvider extends ChangeNotifier {
           ? 'Готово (${_mcp!.tools.length} инструментов)'
           : 'Модель загружена';
     } catch (e) {
-      errorText = 'Ошибка импорта: $e';
+      // If init failed, the user's file may be incompatible (e.g. LFM2.5-Instruct
+      // vs lfm2-1.2b-tool). Cactus will attempt a fresh download on next startup.
+      errorText = 'Не удалось загрузить выбранный файл.\n'
+          'Совместимая модель: lfm2-1.2b-tool.gguf\n'
+          'Детали: $e';
       statusText = 'Ошибка';
     }
     notifyListeners();
