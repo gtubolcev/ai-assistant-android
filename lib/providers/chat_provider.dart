@@ -563,6 +563,17 @@ class ChatProvider extends ChangeNotifier {
     final intent = _detectIntent(userMessage.toLowerCase());
     debugPrint('[AI] intent="$intent" msg="$userMessage"');
 
+    // Warn early if intent needs MCP but it's not connected.
+    if (intent != null && intent != 'web' && _allMcpTools.isEmpty) {
+      debugPrint('[AI] WARNING: intent=$intent but MCP tools empty — server not configured?');
+      _updateMessage(
+        assistantId,
+        '⚠️ MCP не подключён. Настройте сервер в Настройках → сохрани URL и токен.',
+        MessageStatus.error,
+      );
+      return;
+    }
+
     for (int iter = 0; iter < maxIterations; iter++) {
       if (_stopRequested) {
         _stopRequested = false;
