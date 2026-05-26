@@ -157,6 +157,11 @@ class ChatProvider extends ChangeNotifier {
   ///
   /// [called] — names of tools already executed in this agent loop.
   /// The model gets exactly one MCP tool (or web_fetch for web intents).
+  ///
+  /// IMPORTANT: never returns []. When the sequence is exhausted we keep
+  /// repeating the LAST tool so the <|tool_list_start|> slot in the system
+  /// message stays consistent. The model, seeing the tool already called in
+  /// history, will naturally write a text answer instead of calling again.
   List<CactusTool> _nextTool(String userMessage, Set<String> called) {
     final intent = _detectIntent(userMessage.toLowerCase());
 
@@ -165,14 +170,17 @@ class ChatProvider extends ChangeNotifier {
     final sequence = _kSequences[intent] ?? [];
     final byName = {for (final t in _allMcpTools) t.name: t};
 
+    CactusTool? lastFound;
     for (final name in sequence) {
-      if (!called.contains(name)) {
-        final tool = byName[name];
-        if (tool != null) return [tool];
+      final tool = byName[name];
+      if (tool != null) {
+        lastFound = tool;
+        if (!called.contains(name)) return [tool];
       }
     }
-    // All tools in sequence already called — no more needed.
-    return [];
+    // Sequence exhausted — repeat the last tool to keep context intact.
+    if (lastFound != null) return [lastFound];
+    return [webFetchTool]; // fallback
   }
 
   static bool _kw(String msg, List<String> words) =>
