@@ -1,20 +1,34 @@
+import 'dart:convert';
+
 import 'package:cactus/cactus.dart';
 import 'package:mcp_dart/mcp_dart.dart';
 
-/// Connects to a remote MCP server (dav-mcp) via StreamableHTTP,
+/// Connects to a remote MCP server via StreamableHTTP,
 /// fetches the tool list, and routes tool calls.
+///
+/// Supports two auth modes:
+///   - Bearer token  (e.g. dav-mcp with BEARER_TOKEN)
+///   - HTTP Basic    (e.g. nextcloud-mcp in multi_user_basic mode)
+///
+/// Pass [username] + [password] for Basic Auth, or [bearerToken] for Bearer.
+/// Leave all empty for unauthenticated servers.
 class McpBridge {
-  final String serverUrl;  // e.g. https://mcp.rakulka.ru/mcp
+  final String serverUrl;
   final String bearerToken;
+  final String username;
+  final String password;
 
   McpClient? _client;
   final List<CactusTool> _tools = [];
 
-  McpBridge({required this.serverUrl, required this.bearerToken});
+  McpBridge({
+    required this.serverUrl,
+    this.bearerToken = '',
+    this.username = '',
+    this.password = '',
+  });
 
-  /// All tools fetched from the MCP server, in CactusTool format.
   List<CactusTool> get tools => List.unmodifiable(_tools);
-
   bool get isConnected => _client != null;
 
   // ── Connect ────────────────────────────────────────────────────────────────
@@ -24,12 +38,10 @@ class McpBridge {
       Implementation(name: 'ai-assistant', version: '1.0.0'),
     );
 
-    // Only add Authorization header if a token is configured.
-    final Map<String, dynamic>? requestInit = bearerToken.isNotEmpty
+    final authHeader = _buildAuthHeader();
+    final Map<String, dynamic>? requestInit = authHeader != null
         ? <String, dynamic>{
-            'headers': <String, dynamic>{
-              'Authorization': 'Bearer $bearerToken',
-            },
+            'headers': <String, dynamic>{'Authorization': authHeader},
           }
         : null;
 
@@ -40,6 +52,19 @@ class McpBridge {
 
     await _client!.connect(transport);
     await _fetchTools();
+  }
+
+  /// Returns the Authorization header value, or null if no auth configured.
+  String? _buildAuthHeader() {
+    // Basic Auth takes priority when username is set.
+    if (username.isNotEmpty) {
+      final creds = base64Encode(utf8.encode('$username:$password'));
+      return 'Basic $creds';
+    }
+    if (bearerToken.isNotEmpty) {
+      return 'Bearer $bearerToken';
+    }
+    return null;
   }
 
   // ── Fetch & convert tools ─────────────────────────────────────────────────
@@ -53,8 +78,7 @@ class McpBridge {
   }
 
   CactusTool _convertTool(Tool tool) {
-    // tool.inputSchema is a sealed JsonSchema (concrete type: JsonObject, etc.).
-    // Casting directly to Map<String, dynamic> throws at runtime — use toJson().
+    // tool.inputSchema is a sealed JsonSchema — use toJson() to get a plain map.
     final schema = tool.inputSchema.toJson();
     final props = schema['properties'] as Map<String, dynamic>? ?? {};
     final requiredList = (schema['required'] as List<dynamic>? ?? [])
@@ -82,10 +106,7 @@ class McpBridge {
 
   // ── Execute tool call ─────────────────────────────────────────────────────
 
-  Future<String> executeTool(
-    String name,
-    Map<String, dynamic> args,
-  ) async {
+  Future<String> executeTool(String name, Map<String, dynamic> args) async {
     final client = _client;
     if (client == null) return 'MCP не подключён';
 
@@ -94,7 +115,6 @@ class McpBridge {
         CallToolRequest(name: name, arguments: args),
       );
 
-      // Extract text from content list (MCP spec: TextContent items)
       final parts = <String>[];
       for (final item in result.content) {
         if (item is TextContent) {
@@ -103,7 +123,6 @@ class McpBridge {
           parts.add(item.toString());
         }
       }
-
       return parts.isEmpty ? '(no content)' : parts.join('\n');
     } catch (e) {
       return 'Ошибка MCP инструмента "$name": $e';

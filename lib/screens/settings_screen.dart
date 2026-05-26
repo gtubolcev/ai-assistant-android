@@ -14,7 +14,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // MCP fields
   final _urlCtrl = TextEditingController();
+  final _mcpUserCtrl = TextEditingController();
+  final _mcpPassCtrl = TextEditingController();
   final _tokenCtrl = TextEditingController();
+  bool _obscureMcpPass = true;
   bool _obscureToken = true;
   bool _savingMcp = false;
 
@@ -41,6 +44,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _urlCtrl.text = prefs.getString('mcp_url') ?? '';
+      _mcpUserCtrl.text = prefs.getString('mcp_user') ?? '';
+      _mcpPassCtrl.text = prefs.getString('mcp_password') ?? '';
       _tokenCtrl.text = prefs.getString('mcp_token') ?? '';
       _modelPathCtrl.text = prefs.getString('model_path') ?? '';
       _caldavUrlCtrl.text = prefs.getString('caldav_url') ?? '';
@@ -80,6 +85,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _savingMcp = true);
     await context.read<ChatProvider>().saveMcpConfig(
           url: _urlCtrl.text.trim(),
+          user: _mcpUserCtrl.text.trim(),
+          password: _mcpPassCtrl.text,
           token: _tokenCtrl.text.trim(),
         );
     if (mounted) {
@@ -113,6 +120,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _urlCtrl.dispose();
+    _mcpUserCtrl.dispose();
+    _mcpPassCtrl.dispose();
     _tokenCtrl.dispose();
     _modelPathCtrl.dispose();
     _caldavUrlCtrl.dispose();
@@ -189,20 +198,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _Field(
             controller: _urlCtrl,
             label: 'URL MCP сервера',
-            hint: 'https://mcp.rakulka.ru/mcp',
+            hint: 'https://mcp2.rakulka.ru/mcp',
             keyboardType: TextInputType.url,
+          ),
+          const SizedBox(height: 8),
+          _HintCard(
+            icon: Icons.info_outline,
+            text: 'Basic Auth (nextcloud-mcp): заполни логин и пароль.\n'
+                'Bearer Token (dav-mcp): оставь логин пустым, заполни токен.',
+          ),
+          const SizedBox(height: 12),
+          _Field(
+            controller: _mcpUserCtrl,
+            label: 'Логин (Basic Auth)',
+            hint: 'gtubolcev',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _mcpPassCtrl,
+            obscureText: _obscureMcpPass,
+            decoration: InputDecoration(
+              labelText: 'Пароль (Basic Auth)',
+              hintText: 'App password из Nextcloud',
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(_obscureMcpPass
+                    ? Icons.visibility
+                    : Icons.visibility_off),
+                onPressed: () =>
+                    setState(() => _obscureMcpPass = !_obscureMcpPass),
+              ),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _tokenCtrl,
             obscureText: _obscureToken,
             decoration: InputDecoration(
-              labelText: 'Bearer Token',
-              hintText: 'Секретный токен доступа',
+              labelText: 'Bearer Token (опционально)',
+              hintText: 'Только для серверов с Bearer Auth',
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
-                icon: Icon(
-                    _obscureToken ? Icons.visibility : Icons.visibility_off),
+                icon: Icon(_obscureToken
+                    ? Icons.visibility
+                    : Icons.visibility_off),
                 onPressed: () =>
                     setState(() => _obscureToken = !_obscureToken),
               ),

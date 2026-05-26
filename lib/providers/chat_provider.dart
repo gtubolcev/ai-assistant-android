@@ -269,7 +269,6 @@ class ChatProvider extends ChangeNotifier {
   Future<void> _connectMcp() async {
     final prefs = await SharedPreferences.getInstance();
     final url = prefs.getString('mcp_url');
-    final token = prefs.getString('mcp_token');
 
     if (url == null || url.isEmpty) {
       statusText = 'Модель готова (MCP не настроен)';
@@ -282,8 +281,13 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
 
       await _mcp?.disconnect();
-      // Token is optional — servers without auth (e.g. single_user_basic) work fine.
-      _mcp = McpBridge(serverUrl: url, bearerToken: token ?? '');
+      _mcp = McpBridge(
+        serverUrl: url,
+        // Basic Auth (multi_user_basic) takes priority over Bearer token.
+        username: prefs.getString('mcp_user') ?? '',
+        password: prefs.getString('mcp_password') ?? '',
+        bearerToken: prefs.getString('mcp_token') ?? '',
+      );
       await _mcp!.connect();
 
       statusText = 'Готово (${_mcp!.tools.length} инструментов)';
@@ -410,11 +414,15 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> saveMcpConfig({
     required String url,
-    required String token,
+    String token = '',
+    String user = '',
+    String password = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('mcp_url', url);
     await prefs.setString('mcp_token', token);
+    await prefs.setString('mcp_user', user);
+    await prefs.setString('mcp_password', password);
     await _connectMcp();
   }
 
