@@ -15,9 +15,6 @@ const _kDefaultSlug = 'lfm2-1.2b-tool';
 /// SharedPreferences key for the active model slug.
 const _kActiveSlugKey = 'active_model_slug';
 
-/// Slug used for user-imported local GGUF files.
-const _kLocalSlug = 'local';
-
 /// SharedPreferences key for the last imported file path.
 const _kModelSourceKey = 'model_source_path';
 
@@ -200,10 +197,9 @@ class ChatProvider extends ChangeNotifier {
       statusText = 'Инициализация модели…';
       notifyListeners();
 
-      final modelParam = await _modelParamFor(_activeModelSlug);
-      debugPrint('Initializing context with model: $modelParam');
+      debugPrint('Initializing context with model: $_activeModelSlug');
       await _lm!.initializeModel(
-        params: CactusInitParams(model: modelParam, contextSize: 4096),
+        params: CactusInitParams(model: _activeModelSlug, contextSize: 4096),
       );
 
       isModelReady = true;
@@ -219,6 +215,8 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// Returns the set of model slugs that are already downloaded to internal storage.
+  /// Imported local files are stored under their matching CDN slug directory,
+  /// so they appear here the same way as CDN downloads.
   Future<Set<String>> downloadedModelSlugs() async {
     final appDocDir = await getApplicationDocumentsDirectory();
     final result = <String>{};
@@ -226,9 +224,6 @@ class ChatProvider extends ChangeNotifier {
       final dir = Directory('${appDocDir.path}/models/${m.slug}');
       if (await _dirHasFiles(dir)) result.add(m.slug);
     }
-    // Also add local if present
-    final localDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
-    if (await _dirHasFiles(localDir)) result.add(_kLocalSlug);
     return result;
   }
 
@@ -339,13 +334,32 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Import from local file ────────────────────────────────────────────────
 
+  /// Maps a GGUF filename to the Cactus CDN slug it belongs to.
+  ///
+  /// CactusInitParams.model only accepts CDN slugs — it does NOT support
+  /// arbitrary file paths.  To load a local GGUF we must place it in the
+  /// directory Cactus uses for that slug, so initializeModel finds it there
+  /// instead of downloading from CDN.
+  static String _slugFromFilename(String filename) {
+    final f = filename.toLowerCase();
+    if (f.contains('lfm2') || f.contains('lfm-2')) return 'lfm2-1.2b-tool';
+    if (f.contains('functiongemma') || f.contains('function_gemma')) {
+      return 'functiongemma-270m';
+    }
+    if (f.contains('qwen3-1.7') || f.contains('qwen3_1.7')) return 'qwen3-1.7';
+    if (f.contains('qwen3')) return 'qwen3-0.6';
+    // Unknown model — default to the recommended slug; the user will see
+    // an error if the GGUF format is incompatible.
+    return 'lfm2-1.2b-tool';
+  }
+
   /// Imports a GGUF file chosen by the user via the file picker.
   ///
-  /// Copies the file to the [_kLocalSlug] model directory and re-initialises
-  /// Cactus.  Only llama.cpp-compatible GGUFs will work.
+  /// Cactus only accepts CDN slugs in [CactusInitParams.model], so we detect
+  /// the slug from the filename and copy the file into that slug's directory.
+  /// Cactus will find it there and skip the CDN download step.
   Future<void> importModelFromFile(String filePath) async {
     final appDocDir = await getApplicationDocumentsDirectory();
-    final internalDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
     final prefs = await SharedPreferences.getInstance();
 
     isModelReady = false;
@@ -354,7 +368,13 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Wipe old local model, copy new one.
+      final filename = filePath.split('/').last;
+      final targetSlug = _slugFromFilename(filename);
+      final internalDir = Directory('${appDocDir.path}/models/$targetSlug');
+
+      debugPrint('Import: $filename → slug=$targetSlug → ${internalDir.path}');
+
+      // Wipe existing files for this slug so the old download doesn't linger.
       if (await internalDir.exists()) await internalDir.delete(recursive: true);
       await _importModelToInternal(File(filePath), internalDir);
 
@@ -366,21 +386,18 @@ class ChatProvider extends ChangeNotifier {
       }
       debugPrint('Imported: ${files.map((f) => f.path).join(', ')}');
 
-      // Switch to local slug.
-      _activeModelSlug = _kLocalSlug;
-      await prefs.setString(_kActiveSlugKey, _kLocalSlug);
+      // Activate the matching CDN slug — Cactus will find the file in its dir.
+      _activeModelSlug = targetSlug;
+      await prefs.setString(_kActiveSlugKey, targetSlug);
       await prefs.setString(_kModelSourceKey, filePath);
 
       statusText = 'Инициализация модели…';
       notifyListeners();
 
-      // Disable Cactus built-in tool filtering — we do our own intent-based
-      // filtering (_toolsFor) that already limits to ≤5 tools per request.
       _lm = CactusLM(enableToolFiltering: false);
-      final modelParam = await _modelParamFor(_kLocalSlug);
-      debugPrint('Initializing context with model: $modelParam');
+      debugPrint('Initializing context with model: $targetSlug');
       await _lm!.initializeModel(
-        params: CactusInitParams(model: modelParam, contextSize: 4096),
+        params: CactusInitParams(model: targetSlug, contextSize: 4096),
       );
 
       isModelReady = true;
@@ -389,8 +406,7 @@ class ChatProvider extends ChangeNotifier {
           : 'Модель загружена';
     } catch (e) {
       errorText = 'Не удалось загрузить выбранный файл.\n'
-          'Файл должен быть совместим с llama.cpp.\n'
-          'Рекомендуем скачать модель из списка в Настройках.\n'
+          'Поддерживаются модели: LFM2-1.2B-Tool, FunctionGemma-270M, Qwen3-0.6B/1.7B.\n'
           'Детали: $e';
       statusText = 'Ошибка';
     }
@@ -398,35 +414,6 @@ class ChatProvider extends ChangeNotifier {
   }
 
   // ── Model resolution helpers ──────────────────────────────────────────────
-
-  /// When the active slug is [_kLocalSlug], Cactus must receive a path
-  /// *relative to its internal models directory* — it prepends that directory
-  /// itself, so passing an absolute path doubles it.
-  ///
-  /// Scans `models/local/` and returns `local/<filename>.gguf` (relative),
-  /// or null if the directory is empty / missing.
-  Future<String?> _resolveLocalGgufRelPath() async {
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final localDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
-    if (!await localDir.exists()) return null;
-    await for (final entity in localDir.list()) {
-      if (entity is File && entity.path.toLowerCase().endsWith('.gguf')) {
-        final filename = entity.path.split('/').last;
-        return '$_kLocalSlug/$filename'; // e.g. "local/LFM2-1.2B-Tool-Q4_K_M.gguf"
-      }
-    }
-    return null;
-  }
-
-  /// Returns the model identifier to pass to [CactusInitParams.model].
-  /// For CDN slugs this is just the slug; for local imports it's the
-  /// relative path `local/<filename>.gguf` (Cactus prepends its models dir).
-  Future<String> _modelParamFor(String slug) async {
-    if (slug != _kLocalSlug) return slug;
-    final relPath = await _resolveLocalGgufRelPath();
-    if (relPath == null) throw Exception('Файл модели не найден в models/local/');
-    return relPath;
-  }
 
   Future<FileSystemEntity?> _resolveModelSource(String path) async {
     final f = File(path);
