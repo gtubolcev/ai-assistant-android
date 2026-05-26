@@ -15,8 +15,6 @@ const _kDefaultSlug = 'lfm2-1.2b-tool';
 /// SharedPreferences key for the active model slug.
 const _kActiveSlugKey = 'active_model_slug';
 
-/// SharedPreferences key for the last imported file path.
-const _kModelSourceKey = 'model_source_path';
 
 // NOTE: LFM2-1.2B-Tool requires the system message to contain ONLY the tool
 // list in <|tool_list_start|>...<|tool_list_end|> format. The Cactus native
@@ -191,8 +189,6 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
-      // Handle custom path import if needed.
-      await _ensureCustomPathImported(prefs);
 
       statusText = 'Инициализация модели…';
       notifyListeners();
@@ -227,50 +223,11 @@ class ChatProvider extends ChangeNotifier {
     return result;
   }
 
-  /// Returns true if the model files are already present in internal storage
-  /// or a valid custom path is saved.
+  /// Returns true if the model files are already present in internal storage.
   Future<bool> _isModelCached(String slug) async {
     final appDocDir = await getApplicationDocumentsDirectory();
     final internalDir = Directory('${appDocDir.path}/models/$slug');
-    if (await _dirHasFiles(internalDir)) return true;
-
-    final prefs = await SharedPreferences.getInstance();
-    final customPath = (prefs.getString('model_path') ?? '').trim();
-    if (customPath.isNotEmpty) {
-      final source = await _resolveModelSource(customPath);
-      if (source != null) return true;
-    }
-
-    return false;
-  }
-
-  /// If a custom model_path is set, imports it to internal storage if not
-  /// already done for that exact source path.
-  Future<void> _ensureCustomPathImported(SharedPreferences prefs) async {
-    final customPath = (prefs.getString('model_path') ?? '').trim();
-    if (customPath.isEmpty) return;
-
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final internalDir = Directory('${appDocDir.path}/models/$_activeModelSlug');
-    final cachedSource = prefs.getString(_kModelSourceKey) ?? '';
-
-    if (cachedSource == customPath && await _dirHasFiles(internalDir)) {
-      debugPrint('Model already imported from $customPath — using cache');
-      return;
-    }
-
-    final source = await _resolveModelSource(customPath);
-    if (source == null) {
-      errorText = 'Модель не найдена: $customPath';
-      notifyListeners();
-      return;
-    }
-
-    statusText = 'Копирование модели…';
-    notifyListeners();
-    if (await internalDir.exists()) await internalDir.delete(recursive: true);
-    await _importModelToInternal(source, internalDir);
-    await prefs.setString(_kModelSourceKey, customPath);
+    return _dirHasFiles(internalDir);
   }
 
   // ── Download & load from Cactus CDN ──────────────────────────────────────
@@ -335,114 +292,24 @@ class ChatProvider extends ChangeNotifier {
   // ── Import from local file ────────────────────────────────────────────────
 
   /// Maps a GGUF filename to the Cactus CDN slug it belongs to.
-  ///
-  /// CactusInitParams.model only accepts CDN slugs — it does NOT support
-  /// arbitrary file paths.  To load a local GGUF we must place it in the
-  /// directory Cactus uses for that slug, so initializeModel finds it there
-  /// instead of downloading from CDN.
-  static String _slugFromFilename(String filename) {
-    final f = filename.toLowerCase();
-    if (f.contains('lfm2') || f.contains('lfm-2')) return 'lfm2-1.2b-tool';
-    if (f.contains('functiongemma') || f.contains('function_gemma')) {
-      return 'functiongemma-270m';
-    }
-    if (f.contains('qwen3-1.7') || f.contains('qwen3_1.7')) return 'qwen3-1.7';
-    if (f.contains('qwen3')) return 'qwen3-0.6';
-    // Unknown model — default to the recommended slug; the user will see
-    // an error if the GGUF format is incompatible.
-    return 'lfm2-1.2b-tool';
-  }
+  // ── Import from local file (NOT SUPPORTED with Cactus) ───────────────────
 
-  /// Imports a GGUF file chosen by the user via the file picker.
+  /// Cactus uses its own proprietary model format (config.txt + custom weight
+  /// files) — it does NOT support llama.cpp GGUF files at all.
   ///
-  /// Cactus only accepts CDN slugs in [CactusInitParams.model], so we detect
-  /// the slug from the filename and copy the file into that slug's directory.
-  /// Cactus will find it there and skip the CDN download step.
+  /// This method always shows an explanatory error so the user understands
+  /// why the feature doesn't work and what to do instead.
   Future<void> importModelFromFile(String filePath) async {
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final prefs = await SharedPreferences.getInstance();
-
     isModelReady = false;
-    statusText = 'Копирование модели…';
-    errorText = null;
+    statusText = 'Ошибка';
+    errorText =
+        'Импорт GGUF-файлов не поддерживается.\n\n'
+        'Cactus SDK использует собственный формат моделей (config.txt + '
+        'файлы весов), несовместимый с llama.cpp GGUF.\n\n'
+        'Пожалуйста, скачайте модель из списка выше — '
+        'они хранятся на CDN Cactus в нужном формате.';
     notifyListeners();
-
-    try {
-      final filename = filePath.split('/').last;
-      final targetSlug = _slugFromFilename(filename);
-      final internalDir = Directory('${appDocDir.path}/models/$targetSlug');
-
-      debugPrint('Import: $filename → slug=$targetSlug → ${internalDir.path}');
-
-      // Wipe existing files for this slug so the old download doesn't linger.
-      if (await internalDir.exists()) await internalDir.delete(recursive: true);
-      await _importModelToInternal(File(filePath), internalDir);
-
-      final files = await internalDir.list().toList();
-      if (files.isEmpty) {
-        throw Exception(
-            'Файл скопирован, но директория пуста — '
-            'проверьте разрешения или выберите файл снова');
-      }
-      debugPrint('Imported: ${files.map((f) => f.path).join(', ')}');
-
-      // Activate the matching CDN slug — Cactus will find the file in its dir.
-      _activeModelSlug = targetSlug;
-      await prefs.setString(_kActiveSlugKey, targetSlug);
-      await prefs.setString(_kModelSourceKey, filePath);
-
-      statusText = 'Инициализация модели…';
-      notifyListeners();
-
-      _lm = CactusLM(enableToolFiltering: false);
-      debugPrint('Initializing context with model: $targetSlug');
-      await _lm!.initializeModel(
-        params: CactusInitParams(model: targetSlug, contextSize: 4096),
-      );
-
-      isModelReady = true;
-      statusText = isMcpConnected
-          ? 'Готово (${_mcp!.tools.length} инструментов)'
-          : 'Модель загружена';
-    } catch (e) {
-      errorText = 'Не удалось загрузить выбранный файл.\n'
-          'Поддерживаются модели: LFM2-1.2B-Tool, FunctionGemma-270M, Qwen3-0.6B/1.7B.\n'
-          'Детали: $e';
-      statusText = 'Ошибка';
-    }
-    notifyListeners();
-  }
-
-  // ── Model resolution helpers ──────────────────────────────────────────────
-
-  Future<FileSystemEntity?> _resolveModelSource(String path) async {
-    final f = File(path);
-    if (await f.exists() && path.toLowerCase().endsWith('.gguf')) return f;
-    final d = Directory(path);
-    if (await d.exists() && await _dirHasFiles(d)) return d;
-    return null;
-  }
-
-  Future<void> _importModelToInternal(
-      FileSystemEntity source, Directory dest) async {
-    await dest.create(recursive: true);
-
-    if (source is File) {
-      final name = source.path.split('/').last;
-      statusText = 'Копирование модели…';
-      notifyListeners();
-      await source.copy('${dest.path}/$name');
-    } else if (source is Directory) {
-      final entities = await source.list().toList();
-      final files = entities.whereType<File>().toList();
-      for (int i = 0; i < files.length; i++) {
-        final name = files[i].path.split('/').last;
-        statusText = 'Копирование модели… (${i + 1}/${files.length})';
-        notifyListeners();
-        await files[i].copy('${dest.path}/$name');
-      }
-    }
-  }
+    return;
 
   Future<bool> _dirHasFiles(Directory dir) async {
     if (!await dir.exists()) return false;
@@ -502,11 +369,6 @@ class ChatProvider extends ChangeNotifier {
     await prefs.setString('mcp_user', user);
     await prefs.setString('mcp_password', password);
     await _connectMcp();
-  }
-
-  Future<void> saveModelPath(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('model_path', path.trim());
   }
 
   Future<void> saveCaldavConfig({
