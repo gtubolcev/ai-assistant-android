@@ -23,17 +23,16 @@ const _kModelSourceKey = 'model_source_path';
 
 /// Builds the system prompt for the on-device LLM.
 String _buildSystemPrompt() {
-  return 'You are a helpful personal AI assistant running entirely on the user\'s '
-      'device. You have access to tools: '
-      'web_fetch (fetch any URL and return its content), '
-      'and Nextcloud tools (nc_calendar_*, nc_contacts_*, nc_notes_*, nc_deck_*, nc_files_*, etc.) '
-      'for calendar events, todos/tasks, contacts, notes, files, and more. '
-      'IMPORTANT: for any calendar or task operation, ALWAYS call '
-      'nc_calendar_list_calendars first to discover available calendar names, '
-      'then use those exact names in the calendar_name argument. '
-      'Never guess or invent calendar names or URLs. '
-      'Always respond in the same language the user uses. '
-      'Be concise.';
+  // Keep this short — small models (1-2B) perform worse with long system prompts.
+  // The key rule: CALL tools immediately, never describe or explain them.
+  return 'You are a personal AI assistant with access to tools. '
+      'RULES: '
+      '1. When the user asks you to do something — CALL THE TOOL immediately. '
+      'Do NOT explain what tool you will use. Do NOT describe the tool call. Just call it. '
+      '2. For calendar/task operations: first call nc_calendar_list_calendars, '
+      'then use the exact calendar name returned. '
+      '3. Reply in the same language the user writes in. '
+      '4. Be brief.';
 }
 
 // ── Available Cactus models (tool-calling capable) ─────────────────────────────
