@@ -47,6 +47,13 @@ class ChatProvider extends ChangeNotifier {
 
   CactusLM? _lm;
   McpBridge? _mcp;
+  bool _stopRequested = false;
+
+  /// Request the current generation to stop at the next safe checkpoint.
+  void stopGeneration() {
+    _stopRequested = true;
+    notifyListeners();
+  }
 
   /// Tools available to Cactus: web_fetch (local) + all MCP tools.
   List<CactusTool> get _allTools => [
@@ -344,8 +351,20 @@ class ChatProvider extends ChangeNotifier {
     final lm = _lm!;
     const maxIterations = 8; // safety cap
     final completedTools = <String>[]; // labels shown while waiting
+    _stopRequested = false;
 
     for (int iter = 0; iter < maxIterations; iter++) {
+      // ── Check stop before each iteration ──────────────────────────────────
+      if (_stopRequested) {
+        _stopRequested = false;
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, '⏹ остановлено', pending: false),
+          MessageStatus.done,
+        );
+        return;
+      }
+
       // ── Generate (always with tools so chaining is possible) ──────────────
       final streamResult = await lm.generateCompletionStream(
         messages: List.from(_history),
@@ -358,6 +377,7 @@ class ChatProvider extends ChangeNotifier {
 
       final buffer = StringBuffer();
       await for (final chunk in streamResult.stream) {
+        if (_stopRequested) break; // exits loop + cancels stream subscription
         buffer.write(chunk);
         final strippedText = _stripToolMarkup(buffer.toString());
         _updateMessage(
@@ -365,6 +385,21 @@ class ChatProvider extends ChangeNotifier {
           _buildDisplay(completedTools, strippedText, pending: true),
           MessageStatus.sending,
         );
+      }
+
+      // Stopped mid-stream — commit what we have and exit.
+      if (_stopRequested) {
+        _stopRequested = false;
+        final partial = buffer.toString();
+        if (partial.isNotEmpty) {
+          _history.add(ChatMessage(role: 'assistant', content: partial));
+        }
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, '${_stripToolMarkup(partial)}\n⏹ остановлено'.trim(), pending: false),
+          MessageStatus.done,
+        );
+        return;
       }
 
       final iterResult = await streamResult.result;
@@ -387,6 +422,7 @@ class ChatProvider extends ChangeNotifier {
       }
 
       for (final call in iterResult.toolCalls) {
+        if (_stopRequested) break;
         completedTools.add('🔧 ${call.name}…');
         _updateMessage(
           assistantId,
@@ -396,9 +432,7 @@ class ChatProvider extends ChangeNotifier {
 
         final toolResult = await _executeTool(call);
 
-        // Replace trailing "…" with "✓" once done.
-        completedTools[completedTools.length - 1] =
-            '🔧 ${call.name} ✓';
+        completedTools[completedTools.length - 1] = '🔧 ${call.name} ✓';
         _history.add(ChatMessage(role: 'tool', content: toolResult));
       }
     }

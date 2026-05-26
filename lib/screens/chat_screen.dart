@@ -201,6 +201,7 @@ class _ChatScreenState extends State<ChatScreen> {
             speechAvailable: _speechAvailable,
             onSend: _send,
             onMic: _toggleListening,
+            onStop: () => context.read<ChatProvider>().stopGeneration(),
           ),
         ],
       ),
@@ -435,6 +436,7 @@ class _InputBar extends StatelessWidget {
   final bool speechAvailable;
   final VoidCallback onSend;
   final VoidCallback onMic;
+  final VoidCallback onStop;
 
   const _InputBar({
     required this.controller,
@@ -444,6 +446,7 @@ class _InputBar extends StatelessWidget {
     required this.speechAvailable,
     required this.onSend,
     required this.onMic,
+    required this.onStop,
   });
 
   @override
@@ -502,20 +505,18 @@ class _InputBar extends StatelessWidget {
             ),
             const SizedBox(width: 8),
 
-            // ── Send button ────────────────────────────────────────────────
+            // ── Send / Stop button ─────────────────────────────────────────
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
               child: isLoading
-                  ? Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: scheme.primary,
-                        ),
+                  ? IconButton.filled(
+                      key: const ValueKey('stop'),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.red.shade700,
+                        foregroundColor: Colors.white,
                       ),
+                      icon: const Icon(Icons.stop_rounded),
+                      onPressed: onStop,
                     )
                   : IconButton.filled(
                       key: const ValueKey('send'),
