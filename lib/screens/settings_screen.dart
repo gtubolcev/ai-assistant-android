@@ -307,8 +307,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader('Модель'),
           const SizedBox(height: 4),
           const Text(
-            'Выберите файл .gguf с устройства. '
-            'Файл будет скопирован во внутреннее хранилище приложения.',
+            'Скачайте одну из готовых моделей или выберите '
+            'свой .gguf файл с устройства.',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 12),
@@ -316,19 +316,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
             builder: (_, provider, __) => _StatusRow(
               ok: provider.isModelReady,
               text: provider.isModelReady
-                  ? 'Модель загружена'
+                  ? 'Активна: ${provider.activeModelSlug}'
                   : provider.statusText,
             ),
           ),
+          const SizedBox(height: 12),
+          // List of available Cactus models
+          Consumer<ChatProvider>(
+            builder: (_, provider, __) => Column(
+              children: kAvailableCactusModels.map((m) {
+                final isActive = provider.isModelReady &&
+                    provider.activeModelSlug == m.slug;
+                return _ModelCard(
+                  model: m,
+                  isActive: isActive,
+                  isLoading: !provider.isModelReady && provider.statusText.contains('Загр') ||
+                      (!provider.isModelReady && provider.statusText.contains('Инициализ') &&
+                          provider.activeModelSlug == m.slug),
+                  onDownload: () =>
+                      context.read<ChatProvider>().downloadAndLoadModel(m.slug),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Row(
+            children: [
+              Expanded(child: Divider()),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text('или свой файл',
+                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ),
+              Expanded(child: Divider()),
+            ],
+          ),
+          const SizedBox(height: 12),
           if (_modelFileName.isNotEmpty) ...[
-            const SizedBox(height: 6),
             _HintCard(
               icon: Icons.insert_drive_file_outlined,
               text: 'Файл: $_modelFileName',
             ),
+            const SizedBox(height: 8),
           ],
-          const SizedBox(height: 12),
-          FilledButton.icon(
+          OutlinedButton.icon(
             onPressed: _pickingModel ? null : _pickModel,
             icon: _pickingModel
                 ? const SizedBox(
@@ -338,6 +369,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   )
                 : const Icon(Icons.folder_open_outlined),
             label: const Text('Выбрать файл .gguf'),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Только модели, совместимые с llama.cpp. '
+            'LFM2.5-Instruct не поддерживается Cactus SDK.',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
           ),
 
           const SizedBox(height: 32),
@@ -482,12 +519,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // ── About ───────────────────────────────────────────────────────────
           const _SectionHeader('О приложении'),
           const SizedBox(height: 8),
-          const ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.psychology_outlined),
-            title: Text('AI Assistant'),
-            subtitle: Text('Офлайн-ассистент на LFM2 1.2B Tool\nCactus SDK + MCP (nextcloud-mcp)'),
-            isThreeLine: true,
+          Consumer<ChatProvider>(
+            builder: (_, p, __) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.psychology_outlined),
+              title: const Text('AI Assistant'),
+              subtitle: Text(
+                'Офлайн-ассистент · Cactus SDK + MCP\n'
+                'Модель: ${p.activeModelSlug}',
+              ),
+              isThreeLine: true,
+            ),
           ),
           const ListTile(
             contentPadding: EdgeInsets.zero,
@@ -579,6 +621,110 @@ class _HintCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ModelCard extends StatelessWidget {
+  final CactusModelInfo model;
+  final bool isActive;
+  final bool isLoading;
+  final VoidCallback onDownload;
+
+  const _ModelCard({
+    required this.model,
+    required this.isActive,
+    required this.isLoading,
+    required this.onDownload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final sizeTxt = model.sizeMb >= 1000
+        ? '${(model.sizeMb / 1000).toStringAsFixed(1)} ГБ'
+        : '${model.sizeMb} МБ';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: isActive
+          ? scheme.primaryContainer.withOpacity(0.4)
+          : scheme.surfaceContainerHighest.withOpacity(0.5),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isActive
+            ? BorderSide(color: scheme.primary, width: 1.5)
+            : BorderSide.none,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        model.name,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: isActive ? scheme.primary : null,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: scheme.secondaryContainer,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          sizeTxt,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: scheme.onSecondaryContainer,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    model.description,
+                    style:
+                        TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (isActive)
+              Icon(Icons.check_circle_rounded,
+                  color: scheme.primary, size: 20)
+            else if (isLoading)
+              const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              TextButton(
+                onPressed: onDownload,
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('Скачать'),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -9,17 +9,20 @@ import '../models/message.dart';
 import '../tools/mcp_bridge.dart';
 import '../tools/web_fetch_tool.dart';
 
-/// Cactus model slug to use.
-const _kModelSlug = 'lfm2-1.2b-tool';
+/// Default Cactus model slug used when nothing else is configured.
+const _kDefaultSlug = 'lfm2-1.2b-tool';
+
+/// SharedPreferences key for the active model slug.
+const _kActiveSlugKey = 'active_model_slug';
+
+/// Slug used for user-imported local GGUF files.
+const _kLocalSlug = 'local';
+
+/// SharedPreferences key for the last imported file path.
+const _kModelSourceKey = 'model_source_path';
 
 /// Builds the system prompt for the on-device LLM.
-String _buildSystemPrompt({
-  String? caldavUrl,
-  String? caldavUser,
-  String? caldavPassword,
-}) {
-  // Note: caldavUrl/User/Password are kept for future use but nextcloud-mcp
-  // handles auth internally — do not inject URLs into the prompt.
+String _buildSystemPrompt() {
   return 'You are a helpful personal AI assistant running entirely on the user\'s '
       'device. You have access to tools: '
       'web_fetch (fetch any URL and return its content), '
@@ -30,8 +33,53 @@ String _buildSystemPrompt({
       'then use those exact names in the calendar_name argument. '
       'Never guess or invent calendar names or URLs. '
       'Always respond in the same language the user uses. '
-      'Be concise — you run on a 1.2B parameter model.';
+      'Be concise.';
 }
+
+// ── Available Cactus models (tool-calling capable) ─────────────────────────────
+
+class CactusModelInfo {
+  final String slug;
+  final String name;
+  final int sizeMb;
+  final String description;
+
+  const CactusModelInfo({
+    required this.slug,
+    required this.name,
+    required this.sizeMb,
+    required this.description,
+  });
+}
+
+const kAvailableCactusModels = <CactusModelInfo>[
+  CactusModelInfo(
+    slug: 'functiongemma-270m',
+    name: 'FunctionGemma 3 270M',
+    sizeMb: 182,
+    description: 'Самая компактная, быстрее всего отвечает',
+  ),
+  CactusModelInfo(
+    slug: 'qwen3-0.6',
+    name: 'Qwen3 0.6B',
+    sizeMb: 394,
+    description: 'Маленькая, хорошо работает с инструментами',
+  ),
+  CactusModelInfo(
+    slug: 'lfm2-1.2b-tool',
+    name: 'LFM2 1.2B Tool ★',
+    sizeMb: 729,
+    description: 'Рекомендуется — обучена специально для tool calling',
+  ),
+  CactusModelInfo(
+    slug: 'qwen3-1.7',
+    name: 'Qwen3 1.7B',
+    sizeMb: 1161,
+    description: 'Лучший tool calling, занимает больше памяти',
+  ),
+];
+
+// ── Provider ───────────────────────────────────────────────────────────────────
 
 class ChatProvider extends ChangeNotifier {
   // ── Public state ───────────────────────────────────────────────────────────
@@ -39,15 +87,19 @@ class ChatProvider extends ChangeNotifier {
   final List<AppMessage> messages = [];
   bool isLoading = false;
   bool isModelReady = false;
-  String statusText = 'Загрузка модели…';
+  String statusText = 'Инициализация…';
   String? errorText;
   bool get isMcpConnected => _mcp?.isConnected ?? false;
+
+  /// Slug of the currently active model (or empty if none loaded).
+  String get activeModelSlug => _activeModelSlug;
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
   CactusLM? _lm;
   McpBridge? _mcp;
   bool _stopRequested = false;
+  String _activeModelSlug = _kDefaultSlug;
 
   /// Request the current generation to stop at the next safe checkpoint.
   void stopGeneration() {
@@ -60,7 +112,7 @@ class ChatProvider extends ChangeNotifier {
 
   /// Returns a context-filtered tool list for the given user message.
   ///
-  /// A 1.2B model can't reliably choose from 134 tools — show only the
+  /// A small model can't reliably choose from 134 tools — show only the
   /// relevant subset (≤ ~20) based on keywords in the message.
   List<CactusTool> _toolsFor(String userMessage) {
     final m = userMessage.toLowerCase();
@@ -92,7 +144,6 @@ class ChatProvider extends ChangeNotifier {
       'борд', 'канбан', 'карточк',
     ]);
 
-    // Collect matching prefixes
     final prefixes = <String>[];
     if (wantsCalendar || wantsTodo) prefixes.add('nc_calendar');
     if (wantsContact) prefixes.add('nc_contacts');
@@ -102,7 +153,6 @@ class ChatProvider extends ChangeNotifier {
 
     List<CactusTool> mcpSelected;
     if (prefixes.isEmpty) {
-      // No keyword match → show a curated core set (most common operations)
       const core = {
         'nc_calendar_list_calendars',
         'nc_calendar_get_upcoming_events',
@@ -127,46 +177,48 @@ class ChatProvider extends ChangeNotifier {
   static bool _kw(String msg, List<String> words) =>
       words.any((w) => msg.contains(w));
 
-  /// Conversation history passed to Cactus.
   final List<ChatMessage> _history = [];
 
   // ── Initialisation ────────────────────────────────────────────────────────
 
   Future<void> init() async {
     try {
-      statusText = 'Поиск модели…';
+      statusText = 'Инициализация…';
       notifyListeners();
 
-      // Build system prompt with CalDAV credentials if configured.
       final prefs = await SharedPreferences.getInstance();
+      _activeModelSlug = prefs.getString(_kActiveSlugKey) ?? _kDefaultSlug;
+
       _history
         ..clear()
-        ..add(ChatMessage(
-          role: 'system',
-          content: _buildSystemPrompt(
-            caldavUrl: prefs.getString('caldav_url'),
-            caldavUser: prefs.getString('caldav_user'),
-            caldavPassword: prefs.getString('caldav_password'),
-          ),
-        ));
+        ..add(ChatMessage(role: 'system', content: _buildSystemPrompt()));
 
       _lm = CactusLM();
 
-      // Ensure model is present (from settings path, external storage, or download).
-      await _ensureModelAvailable();
+      // Check if model is already available — do NOT auto-download.
+      final cached = await _isModelCached(_activeModelSlug);
+      if (!cached) {
+        statusText = 'Выберите модель в Настройках';
+        notifyListeners();
+        // MCP can still connect independently of the model.
+        await _connectMcp();
+        return;
+      }
+
+      // Handle custom path import if needed.
+      await _ensureCustomPathImported(prefs);
 
       statusText = 'Инициализация модели…';
       notifyListeners();
 
       await _lm!.initializeModel(
-        params: CactusInitParams(model: _kModelSlug, contextSize: 4096),
+        params: CactusInitParams(model: _activeModelSlug, contextSize: 4096),
       );
 
       isModelReady = true;
       statusText = 'Модель готова';
       notifyListeners();
 
-      // Connect to MCP server (non-blocking — failure is recoverable).
       await _connectMcp();
     } catch (e) {
       errorText = 'Ошибка инициализации: $e';
@@ -175,142 +227,175 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  // ── Model resolution ───────────────────────────────────────────────────────
-
-  /// SharedPreferences key that records which source path was last imported.
-  /// Used to avoid re-copying when the app restarts with the same custom path.
-  static const _kModelSourceKey = 'model_source_path';
-
-  /// Ensures the model is in Cactus's internal directory.
-  ///
-  /// Priority:
-  ///   1. User-specified path (settings) — always wins; re-imports if path changed.
-  ///   2. Internal cache — used when no custom path is set.
-  ///   3. Auto-search in external (package-scoped) storage.
-  ///   4. Download from Cactus servers.
-  Future<void> _ensureModelAvailable() async {
+  /// Returns true if the model files are already present in internal storage
+  /// or a valid custom path is saved.
+  Future<bool> _isModelCached(String slug) async {
     final appDocDir = await getApplicationDocumentsDirectory();
-    final internalDir = Directory('${appDocDir.path}/models/$_kModelSlug');
-    final prefs = await SharedPreferences.getInstance();
+    final internalDir = Directory('${appDocDir.path}/models/$slug');
+    if (await _dirHasFiles(internalDir)) return true;
 
-    // 1. Custom path from settings takes priority.
+    final prefs = await SharedPreferences.getInstance();
     final customPath = (prefs.getString('model_path') ?? '').trim();
     if (customPath.isNotEmpty) {
-      final cachedSource = prefs.getString(_kModelSourceKey) ?? '';
-      // Skip re-import if the cache was already built from this exact path.
-      if (cachedSource == customPath && await _dirHasFiles(internalDir)) {
-        debugPrint('Model already imported from $customPath — using cache');
-        return;
-      }
-      statusText = 'Поиск модели: $customPath';
-      notifyListeners();
       final source = await _resolveModelSource(customPath);
-      if (source != null) {
-        // Clear stale cache, then import from the new source.
-        if (await internalDir.exists()) await internalDir.delete(recursive: true);
-        await _importModelToInternal(source, internalDir);
-        await prefs.setString(_kModelSourceKey, customPath);
-        return;
-      }
-      // Path is set but nothing found — warn and fall through.
-      errorText = 'Модель не найдена: $customPath';
-      notifyListeners();
+      if (source != null) return true;
     }
 
-    // 2. Already cached internally (from a previous download or import)?
-    if (await _dirHasFiles(internalDir)) {
-      debugPrint('Model found in internal cache: ${internalDir.path}');
+    return false;
+  }
+
+  /// If a custom model_path is set, imports it to internal storage if not
+  /// already done for that exact source path.
+  Future<void> _ensureCustomPathImported(SharedPreferences prefs) async {
+    final customPath = (prefs.getString('model_path') ?? '').trim();
+    if (customPath.isEmpty) return;
+
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final internalDir = Directory('${appDocDir.path}/models/$_activeModelSlug');
+    final cachedSource = prefs.getString(_kModelSourceKey) ?? '';
+
+    if (cachedSource == customPath && await _dirHasFiles(internalDir)) {
+      debugPrint('Model already imported from $customPath — using cache');
       return;
     }
 
-    // 3. Auto-search in external (package-scoped) storage.
-    statusText = 'Поиск модели во внешнем хранилище…';
-    notifyListeners();
-    final extSource = await _searchExternalStorage();
-    if (extSource != null) {
-      debugPrint('Model found in external storage: ${extSource.path}');
-      try {
-        await _importModelToInternal(extSource, internalDir);
-        return;
-      } catch (e) {
-        // Likely a permission error (READ_EXTERNAL_STORAGE not granted).
-        // Fall through to download; user can pick the file manually via Settings.
-        debugPrint('Could not import from external storage: $e');
-        errorText = 'Нет доступа к файлу модели. Выберите файл в Настройках.';
-        notifyListeners();
-      }
+    final source = await _resolveModelSource(customPath);
+    if (source == null) {
+      errorText = 'Модель не найдена: $customPath';
+      notifyListeners();
+      return;
     }
 
-    // 4. Download from Cactus servers.
-    errorText = null;
-    await _lm!.downloadModel(
-      model: _kModelSlug,
-      downloadProcessCallback: (progress, status, isError) {
-        if (isError) {
-          errorText = status;
-        } else {
-          final pct = progress != null
-              ? ' ${(progress * 100).toStringAsFixed(0)}%'
-              : '';
-          statusText = 'Загрузка модели$pct';
-        }
-        notifyListeners();
-      },
-    );
+    statusText = 'Копирование модели…';
+    notifyListeners();
+    if (await internalDir.exists()) await internalDir.delete(recursive: true);
+    await _importModelToInternal(source, internalDir);
+    await prefs.setString(_kModelSourceKey, customPath);
   }
 
-  /// Resolves a user-supplied path to a model source (File or Directory).
-  /// Returns null if nothing usable is found at that path.
+  // ── Download & load from Cactus CDN ──────────────────────────────────────
+
+  /// Downloads a model by [slug] from the Cactus CDN (if not already cached)
+  /// and initialises the LM.  Updates [statusText] / [errorText] throughout.
+  Future<void> downloadAndLoadModel(String slug) async {
+    isModelReady = false;
+    errorText = null;
+    notifyListeners();
+
+    try {
+      _activeModelSlug = slug;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kActiveSlugKey, slug);
+
+      _lm = CactusLM();
+
+      // Download only if not already in internal storage.
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final internalDir = Directory('${appDocDir.path}/models/$slug');
+      if (!await _dirHasFiles(internalDir)) {
+        statusText = 'Загрузка модели…';
+        notifyListeners();
+
+        await _lm!.downloadModel(
+          model: slug,
+          downloadProcessCallback: (progress, status, isError) {
+            if (isError) {
+              errorText = status;
+            } else {
+              final pct = progress != null
+                  ? ' ${(progress * 100).toStringAsFixed(0)}%'
+                  : '';
+              statusText = 'Загрузка$pct';
+            }
+            notifyListeners();
+          },
+        );
+      }
+
+      statusText = 'Инициализация модели…';
+      notifyListeners();
+
+      await _lm!.initializeModel(
+        params: CactusInitParams(model: slug, contextSize: 4096),
+      );
+
+      isModelReady = true;
+      statusText = isMcpConnected
+          ? 'Готово (${_mcp!.tools.length} инструментов)'
+          : 'Модель загружена';
+    } catch (e) {
+      errorText = 'Ошибка загрузки: $e';
+      statusText = 'Ошибка';
+    }
+    notifyListeners();
+  }
+
+  // ── Import from local file ────────────────────────────────────────────────
+
+  /// Imports a GGUF file chosen by the user via the file picker.
+  ///
+  /// Copies the file to the [_kLocalSlug] model directory and re-initialises
+  /// Cactus.  Only llama.cpp-compatible GGUFs will work.
+  Future<void> importModelFromFile(String filePath) async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final internalDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
+    final prefs = await SharedPreferences.getInstance();
+
+    isModelReady = false;
+    statusText = 'Копирование модели…';
+    errorText = null;
+    notifyListeners();
+
+    try {
+      // Wipe old local model, copy new one.
+      if (await internalDir.exists()) await internalDir.delete(recursive: true);
+      await _importModelToInternal(File(filePath), internalDir);
+
+      final files = await internalDir.list().toList();
+      if (files.isEmpty) {
+        throw Exception(
+            'Файл скопирован, но директория пуста — '
+            'проверьте разрешения или выберите файл снова');
+      }
+      debugPrint('Imported: ${files.map((f) => f.path).join(', ')}');
+
+      // Switch to local slug.
+      _activeModelSlug = _kLocalSlug;
+      await prefs.setString(_kActiveSlugKey, _kLocalSlug);
+      await prefs.setString(_kModelSourceKey, filePath);
+
+      statusText = 'Инициализация модели…';
+      notifyListeners();
+
+      _lm = CactusLM();
+      await _lm!.initializeModel(
+        params: CactusInitParams(model: _kLocalSlug, contextSize: 4096),
+      );
+
+      isModelReady = true;
+      statusText = isMcpConnected
+          ? 'Готово (${_mcp!.tools.length} инструментов)'
+          : 'Модель загружена';
+    } catch (e) {
+      errorText = 'Не удалось загрузить выбранный файл.\n'
+          'Файл должен быть совместим с llama.cpp.\n'
+          'Рекомендуем скачать модель из списка в Настройках.\n'
+          'Детали: $e';
+      statusText = 'Ошибка';
+    }
+    notifyListeners();
+  }
+
+  // ── Model resolution helpers ──────────────────────────────────────────────
+
   Future<FileSystemEntity?> _resolveModelSource(String path) async {
-    // Single GGUF file.
     final f = File(path);
     if (await f.exists() && path.toLowerCase().endsWith('.gguf')) return f;
-
-    // Directory containing model files.
     final d = Directory(path);
     if (await d.exists() && await _dirHasFiles(d)) return d;
-
     return null;
   }
 
-  /// Searches package-specific external storage for a compatible model.
-  ///
-  /// Looks in:
-  ///   <external>/models/<slug>/   — exact slug folder
-  ///   <external>/models/          — any *.gguf file in the root
-  Future<FileSystemEntity?> _searchExternalStorage() async {
-    // Directories to scan, in priority order.
-    final candidates = <Directory>[
-      // Public Downloads — survives reinstalls, user puts model here manually.
-      Directory('/storage/emulated/0/Download'),
-      // Package-scoped external storage /models/ subdirectory.
-      if (await getExternalStorageDirectory() != null)
-        Directory('${(await getExternalStorageDirectory())!.path}/models'),
-    ];
-
-    for (final dir in candidates) {
-      try {
-        if (!await dir.exists()) continue;
-
-        // Exact slug subdirectory inside this dir.
-        final slugDir = Directory('${dir.path}/$_kModelSlug');
-        if (await _dirHasFiles(slugDir)) return slugDir;
-
-        // Any single .gguf file directly in this directory.
-        await for (final entity in dir.list()) {
-          if (entity is File &&
-              entity.path.toLowerCase().endsWith('.gguf')) {
-            return entity;
-          }
-        }
-      } catch (e) {
-        debugPrint('Storage search failed for ${dir.path}: $e');
-      }
-    }
-    return null;
-  }
-
-  /// Copies a GGUF file or directory of files into [dest] (Cactus model dir).
   Future<void> _importModelToInternal(
       FileSystemEntity source, Directory dest) async {
     await dest.create(recursive: true);
@@ -322,12 +407,10 @@ class ChatProvider extends ChangeNotifier {
       await source.copy('${dest.path}/$name');
     } else if (source is Directory) {
       final entities = await source.list().toList();
-      final files =
-          entities.whereType<File>().toList();
+      final files = entities.whereType<File>().toList();
       for (int i = 0; i < files.length; i++) {
         final name = files[i].path.split('/').last;
-        statusText =
-            'Копирование модели… (${i + 1}/${files.length})';
+        statusText = 'Копирование модели… (${i + 1}/${files.length})';
         notifyListeners();
         await files[i].copy('${dest.path}/$name');
       }
@@ -346,7 +429,9 @@ class ChatProvider extends ChangeNotifier {
     final url = prefs.getString('mcp_url');
 
     if (url == null || url.isEmpty) {
-      statusText = 'Модель готова (MCP не настроен)';
+      statusText = isModelReady
+          ? 'Модель готова (MCP не настроен)'
+          : 'Выберите модель в Настройках';
       notifyListeners();
       return;
     }
@@ -358,19 +443,54 @@ class ChatProvider extends ChangeNotifier {
       await _mcp?.disconnect();
       _mcp = McpBridge(
         serverUrl: url,
-        // Basic Auth (multi_user_basic) takes priority over Bearer token.
         username: prefs.getString('mcp_user') ?? '',
         password: prefs.getString('mcp_password') ?? '',
         bearerToken: prefs.getString('mcp_token') ?? '',
       );
       await _mcp!.connect();
 
-      statusText = 'Готово (${_mcp!.tools.length} инструментов)';
+      statusText = isModelReady
+          ? 'Готово (${_mcp!.tools.length} инструментов)'
+          : 'Выберите модель в Настройках';
     } catch (e) {
-      statusText = 'Модель готова (MCP недоступен: $e)';
+      statusText = isModelReady
+          ? 'Модель готова (MCP недоступен: $e)'
+          : 'Выберите модель в Настройках';
       _mcp = null;
     }
     notifyListeners();
+  }
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+
+  Future<void> saveMcpConfig({
+    required String url,
+    String token = '',
+    String user = '',
+    String password = '',
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('mcp_url', url);
+    await prefs.setString('mcp_token', token);
+    await prefs.setString('mcp_user', user);
+    await prefs.setString('mcp_password', password);
+    await _connectMcp();
+  }
+
+  Future<void> saveModelPath(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('model_path', path.trim());
+  }
+
+  Future<void> saveCaldavConfig({
+    required String url,
+    required String user,
+    required String password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('caldav_url', url.trim());
+    await prefs.setString('caldav_user', user.trim());
+    await prefs.setString('caldav_password', password);
   }
 
   // ── Send message ──────────────────────────────────────────────────────────
@@ -410,18 +530,14 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Agent loop ────────────────────────────────────────────────────────────
 
-  /// Multi-turn agent loop: keeps calling tools until the model produces a
-  /// plain text reply.  Each iteration generates with full tool access so the
-  /// model can chain calls (e.g. list_calendars → create_todo).
   Future<void> _runAgentLoop(String assistantId,
       {List<CactusTool> tools = const []}) async {
     final lm = _lm!;
-    const maxIterations = 8; // safety cap
-    final completedTools = <String>[]; // labels shown while waiting
+    const maxIterations = 8;
+    final completedTools = <String>[];
     _stopRequested = false;
 
     for (int iter = 0; iter < maxIterations; iter++) {
-      // ── Check stop before each iteration ──────────────────────────────────
       if (_stopRequested) {
         _stopRequested = false;
         _updateMessage(
@@ -432,7 +548,6 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
-      // ── Generate (always with tools so chaining is possible) ──────────────
       final streamResult = await lm.generateCompletionStream(
         messages: List.from(_history),
         params: CactusCompletionParams(
@@ -444,17 +559,16 @@ class ChatProvider extends ChangeNotifier {
 
       final buffer = StringBuffer();
       await for (final chunk in streamResult.stream) {
-        if (_stopRequested) break; // exits loop + cancels stream subscription
+        if (_stopRequested) break;
         buffer.write(chunk);
-        final strippedText = _stripToolMarkup(buffer.toString());
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, strippedText, pending: true),
+          _buildDisplay(completedTools, _stripToolMarkup(buffer.toString()),
+              pending: true),
           MessageStatus.sending,
         );
       }
 
-      // Stopped mid-stream — commit what we have and exit.
       if (_stopRequested) {
         _stopRequested = false;
         final partial = buffer.toString();
@@ -463,7 +577,10 @@ class ChatProvider extends ChangeNotifier {
         }
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, '${_stripToolMarkup(partial)}\n⏹ остановлено'.trim(), pending: false),
+          _buildDisplay(
+              completedTools,
+              '${_stripToolMarkup(partial)}\n⏹ остановлено'.trim(),
+              pending: false),
           MessageStatus.done,
         );
         return;
@@ -471,7 +588,6 @@ class ChatProvider extends ChangeNotifier {
 
       final iterResult = await streamResult.result;
 
-      // ── No tool calls → final answer ──────────────────────────────────────
       if (iterResult.toolCalls.isEmpty) {
         final text = buffer.toString();
         _history.add(ChatMessage(role: 'assistant', content: text));
@@ -483,7 +599,6 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
-      // ── Has tool calls → execute, add to history, continue loop ───────────
       if (buffer.isNotEmpty) {
         _history.add(ChatMessage(role: 'assistant', content: buffer.toString()));
       }
@@ -496,15 +611,12 @@ class ChatProvider extends ChangeNotifier {
           _buildDisplay(completedTools, '', pending: true),
           MessageStatus.sending,
         );
-
         final toolResult = await _executeTool(call);
-
         completedTools[completedTools.length - 1] = '🔧 ${call.name} ✓';
         _history.add(ChatMessage(role: 'tool', content: toolResult));
       }
     }
 
-    // Safety fallback — should not normally be reached.
     _updateMessage(
       assistantId,
       _buildDisplay(completedTools, '(превышен лимит итераций)', pending: false),
@@ -512,12 +624,8 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
-  /// Builds the display string shown in the chat bubble.
-  ///
-  /// If there are completed tool lines, they appear first as a compact
-  /// prefix, separated from the answer text by a blank line.
-  static String _buildDisplay(
-      List<String> tools, String text, {required bool pending}) {
+  static String _buildDisplay(List<String> tools, String text,
+      {required bool pending}) {
     final parts = <String>[];
     if (tools.isNotEmpty) parts.add(tools.join('\n'));
     if (text.isNotEmpty) parts.add(text);
@@ -528,139 +636,28 @@ class ChatProvider extends ChangeNotifier {
   // ── Tool executor ─────────────────────────────────────────────────────────
 
   Future<String> _executeTool(ToolCall call) async {
-    // web_fetch is handled locally
     if (call.name == 'web_fetch') {
       return executeWebFetch(call.arguments);
     }
-
-    // All other tools go through MCP
     final mcp = _mcp;
     if (mcp == null || !mcp.isConnected) {
       return 'MCP недоступен. Проверь настройки сервера.';
     }
-
     return mcp.executeTool(
       call.name,
       Map<String, dynamic>.from(call.arguments),
     );
   }
 
-  // ── Settings ──────────────────────────────────────────────────────────────
-
-  Future<void> saveMcpConfig({
-    required String url,
-    String token = '',
-    String user = '',
-    String password = '',
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('mcp_url', url);
-    await prefs.setString('mcp_token', token);
-    await prefs.setString('mcp_user', user);
-    await prefs.setString('mcp_password', password);
-    await _connectMcp();
-  }
-
-  /// Saves the user-specified model path.
-  /// Empty string clears the override (use auto-detection).
-  Future<void> saveModelPath(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('model_path', path.trim());
-  }
-
-  /// Imports a GGUF model file chosen by the user via the file picker.
-  ///
-  /// Copies the file to Cactus's internal model directory, then re-initialises
-  /// the model so the new file takes effect immediately (no app restart needed).
-  Future<void> importModelFromFile(String filePath) async {
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final internalDir = Directory('${appDocDir.path}/models/$_kModelSlug');
-    final prefs = await SharedPreferences.getInstance();
-
-    isModelReady = false;
-    statusText = 'Копирование модели…';
-    errorText = null;
-    notifyListeners();
-
-    try {
-      // ── Copy file ──────────────────────────────────────────────────────────
-      if (await internalDir.exists()) await internalDir.delete(recursive: true);
-      await _importModelToInternal(File(filePath), internalDir);
-
-      // Verify the file actually landed in the internal dir.
-      final files = await internalDir.list().toList();
-      if (files.isEmpty) {
-        throw Exception('Файл скопирован, но директория пуста — '
-            'проверьте разрешения или выберите файл снова');
-      }
-      debugPrint('Imported: ${files.map((f) => f.path).join(', ')}');
-
-      await prefs.setString(_kModelSourceKey, filePath);
-
-      // ── Re-initialise Cactus with a fresh instance ─────────────────────────
-      // Must recreate CactusLM — calling initializeModel on an already-loaded
-      // instance is unreliable.
-      statusText = 'Инициализация модели…';
-      notifyListeners();
-
-      _lm = CactusLM(); // always fresh
-      await _lm!.initializeModel(
-        params: CactusInitParams(model: _kModelSlug, contextSize: 4096),
-      );
-
-      isModelReady = true;
-      statusText = isMcpConnected
-          ? 'Готово (${_mcp!.tools.length} инструментов)'
-          : 'Модель загружена';
-    } catch (e) {
-      // If init failed, the user's file may be incompatible (e.g. LFM2.5-Instruct
-      // vs lfm2-1.2b-tool). Cactus will attempt a fresh download on next startup.
-      errorText = 'Не удалось загрузить выбранный файл.\n'
-          'Совместимая модель: lfm2-1.2b-tool.gguf\n'
-          'Детали: $e';
-      statusText = 'Ошибка';
-    }
-    notifyListeners();
-  }
-
-  /// Saves CalDAV connection details used to build the system prompt.
-  Future<void> saveCaldavConfig({
-    required String url,
-    required String user,
-    required String password,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('caldav_url', url.trim());
-    await prefs.setString('caldav_user', user.trim());
-    await prefs.setString('caldav_password', password);
-  }
-
-  /// Returns the path where the model should be placed in external storage
-  /// for auto-detection on next launch (shown as a hint to the user).
-  Future<String> externalModelHintPath() async {
-    try {
-      final extDir = await getExternalStorageDirectory();
-      if (extDir != null) {
-        return '${extDir.path}/models/$_kModelSlug/';
-      }
-    } catch (_) {}
-    return '/sdcard/Android/data/<pkg>/files/models/$_kModelSlug/';
-  }
-
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  /// Removes LFM/ChatML special tokens from text before displaying it.
-  /// Handles both complete and still-open (streaming) tool-call blocks.
   static String _stripToolMarkup(String text) {
-    // Remove complete <|tool_call_start|>...<|tool_call_end|> blocks.
     var result = text.replaceAll(
       RegExp(r'<\|tool_call_start\|>.*?<\|tool_call_end\|>', dotAll: true),
       '',
     );
-    // Remove an open (not-yet-closed) block that started but hasn't ended.
     result = result.replaceAll(
         RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '');
-    // Remove stray ChatML / LFM control tokens.
     result = result.replaceAll(
         RegExp(r'<\|im_end\|>|<\|im_start\|>|<\|tool_call_end\|>'), '');
     return result.trim();
