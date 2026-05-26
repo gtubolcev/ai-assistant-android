@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,35 +30,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _savingCaldav = false;
 
   // Model fields
-  final _modelPathCtrl = TextEditingController();
-  bool _savingModel = false;
-  String _extHintPath = '';
+  bool _pickingModel = false;
+  String _modelFileName = '';
 
   @override
   void initState() {
     super.initState();
     _loadSaved();
-    _loadHintPath();
   }
 
   Future<void> _loadSaved() async {
     final prefs = await SharedPreferences.getInstance();
+    final savedPath = prefs.getString('model_source_path') ?? '';
     setState(() {
       _urlCtrl.text = prefs.getString('mcp_url') ?? '';
       _mcpUserCtrl.text = prefs.getString('mcp_user') ?? '';
       _mcpPassCtrl.text = prefs.getString('mcp_password') ?? '';
       _tokenCtrl.text = prefs.getString('mcp_token') ?? '';
-      _modelPathCtrl.text = prefs.getString('model_path') ?? '';
       _caldavUrlCtrl.text = prefs.getString('caldav_url') ?? '';
       _caldavUserCtrl.text = prefs.getString('caldav_user') ?? '';
       _caldavPassCtrl.text = prefs.getString('caldav_password') ?? '';
+      if (savedPath.isNotEmpty) {
+        _modelFileName = savedPath.split('/').last;
+      }
     });
-  }
-
-  Future<void> _loadHintPath() async {
-    final path =
-        await context.read<ChatProvider>().externalModelHintPath();
-    if (mounted) setState(() => _extHintPath = path);
   }
 
   // ── CalDAV save ────────────────────────────────────────────────────────────
@@ -102,18 +98,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ── Model path save ────────────────────────────────────────────────────────
+  // ── Model file picker ──────────────────────────────────────────────────────
 
-  Future<void> _saveModelPath() async {
-    setState(() => _savingModel = true);
-    await context.read<ChatProvider>().saveModelPath(_modelPathCtrl.text);
+  Future<void> _pickModel() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['gguf'],
+      allowCompression: false,
+    );
+
+    final path = result?.files.single.path;
+    if (path == null || !mounted) return;
+
+    setState(() {
+      _pickingModel = true;
+      _modelFileName = path.split('/').last;
+    });
+
+    await context.read<ChatProvider>().importModelFromFile(path);
+
     if (mounted) {
+      final provider = context.read<ChatProvider>();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('💾 Путь сохранён. Перезапустите приложение для применения.'),
+        SnackBar(
+          content: Text(provider.isModelReady
+              ? '✅ Модель загружена: $_modelFileName'
+              : '⚠️ ${provider.errorText ?? 'Не удалось загрузить модель'}'),
         ),
       );
-      setState(() => _savingModel = false);
+      setState(() => _pickingModel = false);
     }
   }
 
@@ -123,7 +136,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _mcpUserCtrl.dispose();
     _mcpPassCtrl.dispose();
     _tokenCtrl.dispose();
-    _modelPathCtrl.dispose();
     _caldavUrlCtrl.dispose();
     _caldavUserCtrl.dispose();
     _caldavPassCtrl.dispose();
@@ -142,25 +154,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader('Модель'),
           const SizedBox(height: 4),
           const Text(
-            'Путь к файлу модели (.gguf) или папке с моделью. '
-            'Оставьте пустым для автоматического поиска и загрузки.',
+            'Выберите файл .gguf с устройства. '
+            'Файл будет скопирован во внутреннее хранилище приложения.',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _modelPathCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Путь к модели (необязательно)',
-              hintText: '/storage/emulated/0/Android/…/model.gguf',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 6),
-          if (_extHintPath.isNotEmpty)
-            _HintCard(
-              icon: Icons.folder_outlined,
-              text: 'Для автоматического обнаружения поместите модель в:\n$_extHintPath',
-            ),
           const SizedBox(height: 12),
           // Current model status
           Consumer<ChatProvider>(
@@ -171,17 +168,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : provider.statusText,
             ),
           ),
+          if (_modelFileName.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _HintCard(
+              icon: Icons.insert_drive_file_outlined,
+              text: 'Файл: $_modelFileName',
+            ),
+          ],
           const SizedBox(height: 12),
           FilledButton.icon(
-            onPressed: _savingModel ? null : _saveModelPath,
-            icon: _savingModel
+            onPressed: _pickingModel ? null : _pickModel,
+            icon: _pickingModel
                 ? const SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.save_outlined),
-            label: const Text('Сохранить путь'),
+                : const Icon(Icons.folder_open_outlined),
+            label: const Text('Выбрать файл .gguf'),
           ),
 
           const SizedBox(height: 32),

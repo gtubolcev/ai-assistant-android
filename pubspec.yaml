@@ -40,6 +40,9 @@ dependencies:
   # File system paths (getApplicationDocumentsDirectory, getExternalStorageDirectory)
   path_provider: ^2.1.4
 
+  # File picker — lets user browse and select a .gguf model file
+  file_picker: ^8.1.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

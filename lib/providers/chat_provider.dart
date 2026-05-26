@@ -156,8 +156,16 @@ class ChatProvider extends ChangeNotifier {
     final extSource = await _searchExternalStorage();
     if (extSource != null) {
       debugPrint('Model found in external storage: ${extSource.path}');
-      await _importModelToInternal(extSource, internalDir);
-      return;
+      try {
+        await _importModelToInternal(extSource, internalDir);
+        return;
+      } catch (e) {
+        // Likely a permission error (READ_EXTERNAL_STORAGE not granted).
+        // Fall through to download; user can pick the file manually via Settings.
+        debugPrint('Could not import from external storage: $e');
+        errorText = 'Нет доступа к файлу модели. Выберите файл в Настройках.';
+        notifyListeners();
+      }
     }
 
     // 4. Download from Cactus servers.
@@ -457,6 +465,45 @@ class ChatProvider extends ChangeNotifier {
   Future<void> saveModelPath(String path) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('model_path', path.trim());
+  }
+
+  /// Imports a GGUF model file chosen by the user via the file picker.
+  ///
+  /// Copies the file to Cactus's internal model directory, then re-initialises
+  /// the model so the new file takes effect immediately (no app restart needed).
+  Future<void> importModelFromFile(String filePath) async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final internalDir = Directory('${appDocDir.path}/models/$_kModelSlug');
+    final prefs = await SharedPreferences.getInstance();
+
+    isModelReady = false;
+    statusText = 'Копирование модели…';
+    errorText = null;
+    notifyListeners();
+
+    try {
+      // Clear any stale cache before importing the new file.
+      if (await internalDir.exists()) await internalDir.delete(recursive: true);
+      await _importModelToInternal(File(filePath), internalDir);
+      await prefs.setString(_kModelSourceKey, filePath);
+
+      statusText = 'Инициализация модели…';
+      notifyListeners();
+
+      _lm ??= CactusLM();
+      await _lm!.initializeModel(
+        params: CactusInitParams(model: _kModelSlug, contextSize: 4096),
+      );
+
+      isModelReady = true;
+      statusText = isMcpConnected
+          ? 'Готово (${_mcp!.tools.length} инструментов)'
+          : 'Модель загружена';
+    } catch (e) {
+      errorText = 'Ошибка импорта: $e';
+      statusText = 'Ошибка';
+    }
+    notifyListeners();
   }
 
   /// Saves CalDAV connection details used to build the system prompt.
