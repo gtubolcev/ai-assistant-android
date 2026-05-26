@@ -16,12 +16,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Java 17 (required by Gradle + Cactus native build) ───────────────
+      # ── Java 17 — use pre-installed Temurin on ubuntu-latest ─────────────
       - name: Set up Java 17
-        uses: actions/setup-java@v4.7.0
-        with:
-          distribution: temurin
-          java-version: "17"
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> $GITHUB_ENV
+          echo "PATH=$JAVA_HOME_17_X64/bin:$PATH" >> $GITHUB_ENV
+          java -version
 
       # ── Flutter ───────────────────────────────────────────────────────────
       - name: Set up Flutter
