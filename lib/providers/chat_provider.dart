@@ -329,59 +329,91 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Agent loop ────────────────────────────────────────────────────────────
 
+  /// Multi-turn agent loop: keeps calling tools until the model produces a
+  /// plain text reply.  Each iteration generates with full tool access so the
+  /// model can chain calls (e.g. list_calendars → create_todo).
   Future<void> _runAgentLoop(String assistantId) async {
     final lm = _lm!;
+    const maxIterations = 8; // safety cap
+    final completedTools = <String>[]; // labels shown while waiting
 
-    final streamResult = await lm.generateCompletionStream(
-      messages: List.from(_history),
-      params: CactusCompletionParams(
-        tools: _allTools,
-        temperature: 0.7,
-        maxTokens: 512,
-      ),
-    );
+    for (int iter = 0; iter < maxIterations; iter++) {
+      // ── Generate (always with tools so chaining is possible) ──────────────
+      final streamResult = await lm.generateCompletionStream(
+        messages: List.from(_history),
+        params: CactusCompletionParams(
+          tools: _allTools,
+          temperature: 0.7,
+          maxTokens: 512,
+        ),
+      );
 
-    final buffer = StringBuffer();
-    await for (final chunk in streamResult.stream) {
-      buffer.write(chunk);
-      // Strip tool-call markup from the live display; Cactus parses it separately.
-      _updateMessage(
-          assistantId, _stripToolMarkup(buffer.toString()), MessageStatus.sending);
-    }
+      final buffer = StringBuffer();
+      await for (final chunk in streamResult.stream) {
+        buffer.write(chunk);
+        final strippedText = _stripToolMarkup(buffer.toString());
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, strippedText, pending: true),
+          MessageStatus.sending,
+        );
+      }
 
-    final finalResult = await streamResult.result;
+      final iterResult = await streamResult.result;
 
-    if (finalResult.toolCalls.isNotEmpty) {
+      // ── No tool calls → final answer ──────────────────────────────────────
+      if (iterResult.toolCalls.isEmpty) {
+        final text = buffer.toString();
+        _history.add(ChatMessage(role: 'assistant', content: text));
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, _stripToolMarkup(text), pending: false),
+          MessageStatus.done,
+        );
+        return;
+      }
+
+      // ── Has tool calls → execute, add to history, continue loop ───────────
       if (buffer.isNotEmpty) {
         _history.add(ChatMessage(role: 'assistant', content: buffer.toString()));
       }
 
-      for (final call in finalResult.toolCalls) {
+      for (final call in iterResult.toolCalls) {
+        completedTools.add('🔧 ${call.name}…');
         _updateMessage(
           assistantId,
-          '${buffer.isEmpty ? '' : '${buffer.toString()}\n\n'}'
-          '🔧 ${call.name}…',
+          _buildDisplay(completedTools, '', pending: true),
           MessageStatus.sending,
         );
 
-        final result = await _executeTool(call);
+        final toolResult = await _executeTool(call);
 
-        _history.add(ChatMessage(role: 'tool', content: result));
+        // Replace trailing "…" with "✓" once done.
+        completedTools[completedTools.length - 1] =
+            '🔧 ${call.name} ✓';
+        _history.add(ChatMessage(role: 'tool', content: toolResult));
       }
-
-      final followUp = await lm.generateCompletion(
-        messages: List.from(_history),
-        params: CactusCompletionParams(temperature: 0.7, maxTokens: 512),
-      );
-
-      final finalText = followUp.response;
-      _history.add(ChatMessage(role: 'assistant', content: finalText));
-      _updateMessage(assistantId, _stripToolMarkup(finalText), MessageStatus.done);
-    } else {
-      final text = buffer.toString();
-      _history.add(ChatMessage(role: 'assistant', content: text));
-      _updateMessage(assistantId, _stripToolMarkup(text), MessageStatus.done);
     }
+
+    // Safety fallback — should not normally be reached.
+    _updateMessage(
+      assistantId,
+      _buildDisplay(completedTools, '(превышен лимит итераций)', pending: false),
+      MessageStatus.done,
+    );
+  }
+
+  /// Builds the display string shown in the chat bubble.
+  ///
+  /// If there are completed tool lines, they appear first as a compact
+  /// prefix, separated from the answer text by a blank line.
+  static String _buildDisplay(
+      List<String> tools, String text, {required bool pending}) {
+    final parts = <String>[];
+    if (tools.isNotEmpty) parts.add(tools.join('\n'));
+    if (text.isNotEmpty) parts.add(text);
+    if (parts.isEmpty && pending) return '…';
+    return parts.join('\n\n');
   }
 
   // ── Tool executor ─────────────────────────────────────────────────────────
