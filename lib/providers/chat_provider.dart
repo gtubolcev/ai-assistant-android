@@ -382,11 +382,11 @@ class ChatProvider extends ChangeNotifier {
 
       final finalText = followUp.response;
       _history.add(ChatMessage(role: 'assistant', content: finalText));
-      _updateMessage(assistantId, finalText, MessageStatus.done);
+      _updateMessage(assistantId, _stripToolMarkup(finalText), MessageStatus.done);
     } else {
       final text = buffer.toString();
       _history.add(ChatMessage(role: 'assistant', content: text));
-      _updateMessage(assistantId, text, MessageStatus.done);
+      _updateMessage(assistantId, _stripToolMarkup(text), MessageStatus.done);
     }
   }
 
