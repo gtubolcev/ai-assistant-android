@@ -101,98 +101,78 @@ class ChatProvider extends ChangeNotifier {
   /// Full MCP tool list (cached from connection).
   List<CactusTool> get _allMcpTools => _mcp?.tools ?? [];
 
-  /// Returns a context-filtered tool list for the given user message.
-  ///
-  /// Small models (1-2B) fail with many tools — keep to ≤5 per request.
-  /// Intent-based: match specific action + return only the tools needed for it.
-  List<CactusTool> _toolsFor(String userMessage) {
-    final m = userMessage.toLowerCase();
+  // ── Intent → ordered tool sequence ────────────────────────────────────────
+  //
+  // Each intent maps to the ordered list of MCP tools needed to fulfil it.
+  // The agent loop calls _nextTool() each iteration, advancing through the
+  // sequence so the model always receives exactly ONE tool at a time.
+  //
+  // 'web_fetch' is a built-in tool, never in MCP sequences.
 
-    // ── Intent matchers (EN + RU) ─────────────────────────────────────────
-    // Returns named tools from _allMcpTools + always includes web_fetch.
-
-    // Calendar intents
-    if (_kw(m, ['list calendar', 'show calendar', 'what calendar',
-                'список календар', 'какие календар', 'покажи календар'])) {
-      return _pick(['nc_calendar_list_calendars']);
-    }
-    if (_kw(m, ['upcoming', 'today', 'tomorrow', 'this week', 'schedule',
-                'ближайш', 'сегодня', 'завтра', 'на неделе', 'расписан'])) {
-      return _pick(['nc_calendar_list_calendars',
-                    'nc_calendar_get_upcoming_events']);
-    }
-    if (_kw(m, ['create event', 'add event', 'new event', 'new meeting',
-                'создай событи', 'добавь событи', 'новое событи', 'запланируй'])) {
-      return _pick(['nc_calendar_list_calendars', 'nc_calendar_create_event']);
-    }
+  static String? _detectIntent(String m) {
+    if (_kw(m, ['list calendar', 'show calendar', 'what calendar', 'calendars',
+                'список календар', 'какие календар', 'покажи календар'])) return 'list_calendars';
+    if (_kw(m, ['upcoming', 'today', 'tomorrow', 'this week', 'next week',
+                'ближайш', 'сегодня', 'завтра', 'на этой неделе', 'на следующей'])) return 'upcoming';
+    if (_kw(m, ['create event', 'add event', 'new event', 'schedule event',
+                'new meeting', 'создай событи', 'добавь событи', 'новое событи',
+                'запланируй встреч'])) return 'create_event';
+    if (_kw(m, ['list event', 'show event', 'my event', 'what event',
+                'список событи', 'покажи событи', 'мои событи'])) return 'list_events';
     if (_kw(m, ['event', 'meeting', 'appointment', 'calendar',
-                'событи', 'встреч', 'встречу', 'календар'])) {
-      return _pick(['nc_calendar_list_calendars',
-                    'nc_calendar_get_upcoming_events',
-                    'nc_calendar_create_event',
-                    'nc_calendar_list_events']);
-    }
-
-    // Todo/task intents
+                'событи', 'встреч', 'календар'])) return 'upcoming';
     if (_kw(m, ['create task', 'add task', 'new task', 'new todo',
-                'создай задач', 'добавь задач', 'новая задач'])) {
-      return _pick(['nc_calendar_list_calendars', 'nc_calendar_create_todo']);
-    }
-    if (_kw(m, ['task', 'todo', 'задач', 'задание', 'список дел'])) {
-      return _pick(['nc_calendar_list_todos', 'nc_calendar_create_todo',
-                    'nc_calendar_list_calendars']);
-    }
-
-    // Contacts
+                'создай задач', 'добавь задач', 'новую задач'])) return 'create_todo';
+    if (_kw(m, ['task', 'todo', 'задач', 'задание', 'список дел', 'дела'])) return 'list_todos';
     if (_kw(m, ['contact', 'phone', 'email', 'address book',
-                'контакт', 'телефон', 'адресн'])) {
-      return _pick(['nc_contacts_list_contacts', 'nc_contacts_get_contact',
-                    'nc_contacts_create_contact']);
-    }
-
-    // Notes
+                'контакт', 'телефон', 'адресн'])) return 'list_contacts';
     if (_kw(m, ['create note', 'add note', 'new note', 'write note',
-                'создай заметк', 'новая заметк', 'запиши'])) {
-      return _pick(['nc_notes_create_note']);
-    }
-    if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
-      return _pick(['nc_notes_list_notes', 'nc_notes_create_note']);
-    }
-
-    // Files
-    if (_kw(m, ['file', 'folder', 'upload', 'download', 'document',
-                'файл', 'папк', 'загруз', 'документ'])) {
-      return _pick(['nc_files_list_files', 'nc_files_upload_file',
-                    'nc_files_get_file_info']);
-    }
-
-    // Deck/kanban
+                'создай заметк', 'новая заметк', 'запиши заметк'])) return 'create_note';
+    if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) return 'list_notes';
+    if (_kw(m, ['file', 'folder', 'document',
+                'файл', 'папк', 'документ'])) return 'list_files';
     if (_kw(m, ['deck', 'board', 'kanban', 'card',
-                'борд', 'канбан', 'карточк'])) {
-      return _pick(['nc_deck_list_boards', 'nc_deck_create_card',
-                    'nc_deck_list_cards']);
-    }
-
-    // Web fetch
-    if (_kw(m, ['http', 'https', 'url', 'fetch', 'page', 'site', 'website',
-                'сайт', 'страниц'])) {
-      return [webFetchTool];
-    }
-
-    // Default: smallest useful set — just calendars + web
-    return _pick(['nc_calendar_list_calendars',
-                  'nc_calendar_get_upcoming_events',
-                  'nc_calendar_list_todos']);
+                'борд', 'канбан', 'карточк'])) return 'list_deck';
+    if (_kw(m, ['http', 'https', 'url', 'fetch', 'website',
+                'сайт', 'страниц'])) return 'web';
+    return null;
   }
 
-  /// Picks named tools from _allMcpTools; always prepends web_fetch.
-  List<CactusTool> _pick(List<String> names) {
+  // Ordered sequences — model calls them one per iteration via the agent loop.
+  static const _kSequences = <String, List<String>>{
+    'list_calendars':  ['nc_calendar_list_calendars'],
+    'upcoming':        ['nc_calendar_list_calendars', 'nc_calendar_get_upcoming_events'],
+    'list_events':     ['nc_calendar_list_calendars', 'nc_calendar_list_events'],
+    'create_event':    ['nc_calendar_list_calendars', 'nc_calendar_create_event'],
+    'list_todos':      ['nc_calendar_list_todos'],
+    'create_todo':     ['nc_calendar_list_calendars', 'nc_calendar_create_todo'],
+    'list_contacts':   ['nc_contacts_list_contacts'],
+    'list_notes':      ['nc_notes_list_notes'],
+    'create_note':     ['nc_notes_create_note'],
+    'list_files':      ['nc_files_list_files'],
+    'list_deck':       ['nc_deck_list_boards'],
+  };
+
+  /// Returns the next single tool to offer the model.
+  ///
+  /// [called] — names of tools already executed in this agent loop.
+  /// The model gets exactly one MCP tool (or web_fetch for web intents).
+  List<CactusTool> _nextTool(String userMessage, Set<String> called) {
+    final intent = _detectIntent(userMessage.toLowerCase());
+
+    if (intent == 'web' || intent == null) return [webFetchTool];
+
+    final sequence = _kSequences[intent] ?? [];
     final byName = {for (final t in _allMcpTools) t.name: t};
-    final tools = names
-        .map((n) => byName[n])
-        .whereType<CactusTool>()
-        .toList();
-    return [webFetchTool, ...tools];
+
+    for (final name in sequence) {
+      if (!called.contains(name)) {
+        final tool = byName[name];
+        if (tool != null) return [tool];
+      }
+    }
+    // All tools in sequence already called — no more needed.
+    return [];
   }
 
   static bool _kw(String msg, List<String> words) =>
@@ -561,7 +541,7 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _runAgentLoop(assistantId, tools: _toolsFor(text.trim()));
+      await _runAgentLoop(assistantId, userMessage: text.trim());
     } catch (e) {
       _updateMessage(assistantId, 'Ошибка: $e', MessageStatus.error);
     } finally {
@@ -573,10 +553,11 @@ class ChatProvider extends ChangeNotifier {
   // ── Agent loop ────────────────────────────────────────────────────────────
 
   Future<void> _runAgentLoop(String assistantId,
-      {List<CactusTool> tools = const []}) async {
+      {required String userMessage}) async {
     final lm = _lm!;
     const maxIterations = 8;
     final completedTools = <String>[];
+    final calledToolNames = <String>{};   // tracks which MCP tools were executed
     _stopRequested = false;
 
     for (int iter = 0; iter < maxIterations; iter++) {
@@ -589,6 +570,9 @@ class ChatProvider extends ChangeNotifier {
         );
         return;
       }
+
+      // One tool per iteration — model always gets exactly 1 tool to choose from.
+      final tools = _nextTool(userMessage, calledToolNames);
 
       final streamResult = await lm.generateCompletionStream(
         messages: List.from(_history),
@@ -677,6 +661,7 @@ class ChatProvider extends ChangeNotifier {
         );
         final toolResult = await _executeTool(call);
         completedTools[completedTools.length - 1] = '🔧 ${call.name} ✓';
+        calledToolNames.add(call.name);   // advance the sequence for next iter
         _history.add(ChatMessage(role: 'tool', content: toolResult));
       }
     }
