@@ -198,25 +198,33 @@ class ChatProvider extends ChangeNotifier {
   ///   <external>/models/<slug>/   — exact slug folder
   ///   <external>/models/          — any *.gguf file in the root
   Future<FileSystemEntity?> _searchExternalStorage() async {
-    try {
-      final extDir = await getExternalStorageDirectory();
-      if (extDir == null) return null;
+    // Directories to scan, in priority order.
+    final candidates = <Directory>[
+      // Public Downloads — survives reinstalls, user puts model here manually.
+      Directory('/storage/emulated/0/Download'),
+      // Package-scoped external storage /models/ subdirectory.
+      if (await getExternalStorageDirectory() != null)
+        Directory('${(await getExternalStorageDirectory())!.path}/models'),
+    ];
 
-      // Exact slug directory.
-      final slugDir = Directory('${extDir.path}/models/$_kModelSlug');
-      if (await _dirHasFiles(slugDir)) return slugDir;
+    for (final dir in candidates) {
+      try {
+        if (!await dir.exists()) continue;
 
-      // Any .gguf directly in <external>/models/.
-      final modelsDir = Directory('${extDir.path}/models');
-      if (await modelsDir.exists()) {
-        await for (final entity in modelsDir.list()) {
-          if (entity is File && entity.path.toLowerCase().endsWith('.gguf')) {
+        // Exact slug subdirectory inside this dir.
+        final slugDir = Directory('${dir.path}/$_kModelSlug');
+        if (await _dirHasFiles(slugDir)) return slugDir;
+
+        // Any single .gguf file directly in this directory.
+        await for (final entity in dir.list()) {
+          if (entity is File &&
+              entity.path.toLowerCase().endsWith('.gguf')) {
             return entity;
           }
         }
+      } catch (e) {
+        debugPrint('Storage search failed for ${dir.path}: $e');
       }
-    } catch (e) {
-      debugPrint('External storage search failed: $e');
     }
     return null;
   }
