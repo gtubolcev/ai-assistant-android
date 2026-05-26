@@ -200,8 +200,10 @@ class ChatProvider extends ChangeNotifier {
       statusText = 'Инициализация модели…';
       notifyListeners();
 
+      final modelParam = await _modelParamFor(_activeModelSlug);
+      debugPrint('Initializing context with model: $modelParam');
       await _lm!.initializeModel(
-        params: CactusInitParams(model: _activeModelSlug, contextSize: 4096),
+        params: CactusInitParams(model: modelParam, contextSize: 4096),
       );
 
       isModelReady = true;
@@ -375,8 +377,10 @@ class ChatProvider extends ChangeNotifier {
       // Disable Cactus built-in tool filtering — we do our own intent-based
       // filtering (_toolsFor) that already limits to ≤5 tools per request.
       _lm = CactusLM(enableToolFiltering: false);
+      final modelParam = await _modelParamFor(_kLocalSlug);
+      debugPrint('Initializing context with model: $modelParam');
       await _lm!.initializeModel(
-        params: CactusInitParams(model: _kLocalSlug, contextSize: 4096),
+        params: CactusInitParams(model: modelParam, contextSize: 4096),
       );
 
       isModelReady = true;
@@ -394,6 +398,32 @@ class ChatProvider extends ChangeNotifier {
   }
 
   // ── Model resolution helpers ──────────────────────────────────────────────
+
+  /// When the active slug is [_kLocalSlug], Cactus must receive the full path
+  /// to the `.gguf` file — passing the slug (which resolves to a directory)
+  /// causes init to fail.  This method scans `models/local/` and returns the
+  /// first `.gguf` it finds, or null if the directory is empty / missing.
+  Future<String?> _resolveLocalGgufPath() async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final localDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
+    if (!await localDir.exists()) return null;
+    await for (final entity in localDir.list()) {
+      if (entity is File && entity.path.toLowerCase().endsWith('.gguf')) {
+        return entity.path;
+      }
+    }
+    return null;
+  }
+
+  /// Returns the model identifier to pass to [CactusInitParams.model].
+  /// For CDN slugs this is just the slug; for local imports it's the
+  /// absolute path to the `.gguf` file inside `models/local/`.
+  Future<String> _modelParamFor(String slug) async {
+    if (slug != _kLocalSlug) return slug;
+    final path = await _resolveLocalGgufPath();
+    if (path == null) throw Exception('Файл модели не найден в models/local/');
+    return path;
+  }
 
   Future<FileSystemEntity?> _resolveModelSource(String path) async {
     final f = File(path);
