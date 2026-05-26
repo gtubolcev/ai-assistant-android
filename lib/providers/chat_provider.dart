@@ -399,17 +399,20 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Model resolution helpers ──────────────────────────────────────────────
 
-  /// When the active slug is [_kLocalSlug], Cactus must receive the full path
-  /// to the `.gguf` file — passing the slug (which resolves to a directory)
-  /// causes init to fail.  This method scans `models/local/` and returns the
-  /// first `.gguf` it finds, or null if the directory is empty / missing.
-  Future<String?> _resolveLocalGgufPath() async {
+  /// When the active slug is [_kLocalSlug], Cactus must receive a path
+  /// *relative to its internal models directory* — it prepends that directory
+  /// itself, so passing an absolute path doubles it.
+  ///
+  /// Scans `models/local/` and returns `local/<filename>.gguf` (relative),
+  /// or null if the directory is empty / missing.
+  Future<String?> _resolveLocalGgufRelPath() async {
     final appDocDir = await getApplicationDocumentsDirectory();
     final localDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
     if (!await localDir.exists()) return null;
     await for (final entity in localDir.list()) {
       if (entity is File && entity.path.toLowerCase().endsWith('.gguf')) {
-        return entity.path;
+        final filename = entity.path.split('/').last;
+        return '$_kLocalSlug/$filename'; // e.g. "local/LFM2-1.2B-Tool-Q4_K_M.gguf"
       }
     }
     return null;
@@ -417,12 +420,12 @@ class ChatProvider extends ChangeNotifier {
 
   /// Returns the model identifier to pass to [CactusInitParams.model].
   /// For CDN slugs this is just the slug; for local imports it's the
-  /// absolute path to the `.gguf` file inside `models/local/`.
+  /// relative path `local/<filename>.gguf` (Cactus prepends its models dir).
   Future<String> _modelParamFor(String slug) async {
     if (slug != _kLocalSlug) return slug;
-    final path = await _resolveLocalGgufPath();
-    if (path == null) throw Exception('Файл модели не найден в models/local/');
-    return path;
+    final relPath = await _resolveLocalGgufRelPath();
+    if (relPath == null) throw Exception('Файл модели не найден в models/local/');
+    return relPath;
   }
 
   Future<FileSystemEntity?> _resolveModelSource(String path) async {
