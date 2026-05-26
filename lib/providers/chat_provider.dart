@@ -114,8 +114,8 @@ class ChatProvider extends ChangeNotifier {
     final m = userMessage.toLowerCase();
     final byName = {for (final t in _allMcpTools) t.name: t};
 
-    List<String> pick(List<String> names) =>
-        names.where((n) => byName.containsKey(n)).toList();
+    List<CactusTool> pick(List<String> names) =>
+        names.map((n) => byName[n]).whereType<CactusTool>().toList();
 
     // Web only
     if (_kw(m, ['http://', 'https://', 'fetch url', 'open url'])) {
