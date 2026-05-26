@@ -271,7 +271,7 @@ class ChatProvider extends ChangeNotifier {
     final url = prefs.getString('mcp_url');
     final token = prefs.getString('mcp_token');
 
-    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+    if (url == null || url.isEmpty) {
       statusText = 'Модель готова (MCP не настроен)';
       notifyListeners();
       return;
@@ -282,7 +282,8 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
 
       await _mcp?.disconnect();
-      _mcp = McpBridge(serverUrl: url, bearerToken: token);
+      // Token is optional — servers without auth (e.g. single_user_basic) work fine.
+      _mcp = McpBridge(serverUrl: url, bearerToken: token ?? '');
       await _mcp!.connect();
 
       statusText = 'Готово (${_mcp!.tools.length} инструментов)';

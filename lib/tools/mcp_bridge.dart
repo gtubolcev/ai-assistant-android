@@ -24,15 +24,18 @@ class McpBridge {
       Implementation(name: 'ai-assistant', version: '1.0.0'),
     );
 
+    // Only add Authorization header if a token is configured.
+    final Map<String, dynamic>? requestInit = bearerToken.isNotEmpty
+        ? <String, dynamic>{
+            'headers': <String, dynamic>{
+              'Authorization': 'Bearer $bearerToken',
+            },
+          }
+        : null;
+
     final transport = StreamableHttpClientTransport(
       Uri.parse(serverUrl),
-      opts: StreamableHttpClientTransportOptions(
-        requestInit: <String, dynamic>{
-          'headers': <String, dynamic>{
-            'Authorization': 'Bearer $bearerToken',
-          },
-        },
-      ),
+      opts: StreamableHttpClientTransportOptions(requestInit: requestInit),
     );
 
     await _client!.connect(transport);
