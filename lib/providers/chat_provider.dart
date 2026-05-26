@@ -12,37 +12,23 @@ import '../tools/web_fetch_tool.dart';
 /// Cactus model slug to use.
 const _kModelSlug = 'lfm2-1.2b-tool';
 
-/// Builds the system prompt, embedding CalDAV connection details when configured
-/// so the model passes correct calendar_url / addressbook_url / credentials.
+/// Builds the system prompt for the on-device LLM.
 String _buildSystemPrompt({
   String? caldavUrl,
   String? caldavUser,
   String? caldavPassword,
 }) {
-  String caldavHint = '';
-  if (caldavUrl != null && caldavUrl.isNotEmpty) {
-    caldavHint = ' CalDAV base URL: $caldavUrl.';
-    if (caldavUser != null && caldavUser.isNotEmpty) {
-      caldavHint += ' Username: $caldavUser.';
-      // Derive the default calendar URL from base + username if not a full path.
-      final defaultCalUrl = caldavUrl.endsWith('/')
-          ? '${caldavUrl}calendars/$caldavUser/'
-          : '$caldavUrl/calendars/$caldavUser/';
-      caldavHint += ' Default calendars root: $defaultCalUrl.';
-    }
-    if (caldavPassword != null && caldavPassword.isNotEmpty) {
-      caldavHint += ' Password: $caldavPassword.';
-    }
-    caldavHint += ' Use list_calendars to discover specific calendar URLs,'
-        ' then use those exact URLs in calendar_url arguments.';
-  } else {
-    caldavHint = ' IMPORTANT: never guess calendar_url — always call'
-        ' list_calendars first to discover available calendars.';
-  }
+  // Note: caldavUrl/User/Password are kept for future use but nextcloud-mcp
+  // handles auth internally — do not inject URLs into the prompt.
   return 'You are a helpful personal AI assistant running entirely on the user\'s '
       'device. You have access to tools: '
       'web_fetch (fetch any URL and return its content), '
-      'and CalDAV tools for calendar/contacts/tasks (list, create, update, delete).$caldavHint '
+      'and Nextcloud tools (nc_calendar_*, nc_contacts_*, nc_notes_*, nc_deck_*, nc_files_*, etc.) '
+      'for calendar events, todos/tasks, contacts, notes, files, and more. '
+      'IMPORTANT: for any calendar or task operation, ALWAYS call '
+      'nc_calendar_list_calendars first to discover available calendar names, '
+      'then use those exact names in the calendar_name argument. '
+      'Never guess or invent calendar names or URLs. '
       'Always respond in the same language the user uses. '
       'Be concise — you run on a 1.2B parameter model.';
 }
