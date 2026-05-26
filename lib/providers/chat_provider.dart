@@ -227,6 +227,20 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  /// Returns the set of model slugs that are already downloaded to internal storage.
+  Future<Set<String>> downloadedModelSlugs() async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final result = <String>{};
+    for (final m in kAvailableCactusModels) {
+      final dir = Directory('${appDocDir.path}/models/${m.slug}');
+      if (await _dirHasFiles(dir)) result.add(m.slug);
+    }
+    // Also add local if present
+    final localDir = Directory('${appDocDir.path}/models/$_kLocalSlug');
+    if (await _dirHasFiles(localDir)) result.add(_kLocalSlug);
+    return result;
+  }
+
   /// Returns true if the model files are already present in internal storage
   /// or a valid custom path is saved.
   Future<bool> _isModelCached(String slug) async {
@@ -552,7 +566,10 @@ class ChatProvider extends ChangeNotifier {
         messages: List.from(_history),
         params: CactusCompletionParams(
           tools: tools,
-          temperature: 0.7,
+          // LFM2-1.2B-Tool authors recommend temperature=0 (greedy decoding)
+          // for reliable tool calling. For conversational replies without tools
+          // a small value is still fine, but 0 works well universally here.
+          temperature: 0,
           maxTokens: 512,
         ),
       );

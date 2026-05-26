@@ -46,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Model fields
   bool _pickingModel = false;
   String _modelFileName = '';
+  Set<String> _downloadedSlugs = {};
 
   // Backup fields
   bool _exporting = false;
@@ -72,6 +73,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _modelFileName = savedPath.split('/').last;
       }
     });
+    await _refreshDownloadedSlugs();
+  }
+
+  Future<void> _refreshDownloadedSlugs() async {
+    if (!mounted) return;
+    final slugs =
+        await context.read<ChatProvider>().downloadedModelSlugs();
+    if (mounted) setState(() => _downloadedSlugs = slugs);
   }
 
   // ── CalDAV save ────────────────────────────────────────────────────────────
@@ -327,14 +336,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: kAvailableCactusModels.map((m) {
                 final isActive = provider.isModelReady &&
                     provider.activeModelSlug == m.slug;
+                final isDownloaded = _downloadedSlugs.contains(m.slug);
+                final isBusy = !provider.isModelReady &&
+                    provider.activeModelSlug == m.slug &&
+                    (provider.statusText.contains('Загр') ||
+                        provider.statusText.contains('Инициализ'));
                 return _ModelCard(
                   model: m,
                   isActive: isActive,
-                  isLoading: !provider.isModelReady && provider.statusText.contains('Загр') ||
-                      (!provider.isModelReady && provider.statusText.contains('Инициализ') &&
-                          provider.activeModelSlug == m.slug),
-                  onDownload: () =>
-                      context.read<ChatProvider>().downloadAndLoadModel(m.slug),
+                  isDownloaded: isDownloaded,
+                  isLoading: isBusy,
+                  onAction: () async {
+                    await context
+                        .read<ChatProvider>()
+                        .downloadAndLoadModel(m.slug);
+                    await _refreshDownloadedSlugs();
+                  },
                 );
               }).toList(),
             ),
@@ -629,14 +646,17 @@ class _HintCard extends StatelessWidget {
 class _ModelCard extends StatelessWidget {
   final CactusModelInfo model;
   final bool isActive;
+  final bool isDownloaded;
   final bool isLoading;
-  final VoidCallback onDownload;
+  /// Called both for "Скачать" and "Выбрать".
+  final VoidCallback onAction;
 
   const _ModelCard({
     required this.model,
     required this.isActive,
+    required this.isDownloaded,
     required this.isLoading,
-    required this.onDownload,
+    required this.onAction,
   });
 
   @override
@@ -695,10 +715,21 @@ class _ModelCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    model.description,
-                    style:
-                        TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                  Row(
+                    children: [
+                      if (isDownloaded && !isActive) ...[
+                        Icon(Icons.download_done_rounded,
+                            size: 11, color: scheme.secondary),
+                        const SizedBox(width: 3),
+                      ],
+                      Expanded(
+                        child: Text(
+                          model.description,
+                          style: TextStyle(
+                              fontSize: 11, color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -712,9 +743,21 @@ class _ModelCard extends StatelessWidget {
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2))
+            else if (isDownloaded)
+              TextButton(
+                onPressed: onAction,
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  foregroundColor: scheme.primary,
+                ),
+                child: const Text('Выбрать'),
+              )
             else
               TextButton(
-                onPressed: onDownload,
+                onPressed: onAction,
                 style: TextButton.styleFrom(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
