@@ -110,29 +110,38 @@ class ChatProvider extends ChangeNotifier {
   // 'web_fetch' is a built-in tool, never in MCP sequences.
 
   static String? _detectIntent(String m) {
+    // IMPORTANT: specific action intents must come BEFORE generic category
+    // fallbacks — otherwise "add task ... calendar" hits 'calendar' first.
+
+    // ── Create / mutating intents first ───────────────────────────────────
+    if (_kw(m, ['create task', 'add task', 'new task', 'new todo',
+                'создай задач', 'добавь задач', 'новую задач', 'поставь задач'])) return 'create_todo';
+    if (_kw(m, ['create event', 'add event', 'new event', 'schedule event',
+                'new meeting', 'создай событи', 'добавь событи', 'новое событи',
+                'запланируй'])) return 'create_event';
+    if (_kw(m, ['create note', 'add note', 'new note', 'write note',
+                'создай заметк', 'новая заметк', 'запиши заметк'])) return 'create_note';
+
+    // ── List / read intents ────────────────────────────────────────────────
     if (_kw(m, ['list calendar', 'show calendar', 'what calendar', 'calendars',
                 'список календар', 'какие календар', 'покажи календар'])) return 'list_calendars';
     if (_kw(m, ['upcoming', 'today', 'tomorrow', 'this week', 'next week',
                 'ближайш', 'сегодня', 'завтра', 'на этой неделе', 'на следующей'])) return 'upcoming';
-    if (_kw(m, ['create event', 'add event', 'new event', 'schedule event',
-                'new meeting', 'создай событи', 'добавь событи', 'новое событи',
-                'запланируй встреч'])) return 'create_event';
     if (_kw(m, ['list event', 'show event', 'my event', 'what event',
                 'список событи', 'покажи событи', 'мои событи'])) return 'list_events';
-    if (_kw(m, ['event', 'meeting', 'appointment', 'calendar',
-                'событи', 'встреч', 'календар'])) return 'upcoming';
-    if (_kw(m, ['create task', 'add task', 'new task', 'new todo',
-                'создай задач', 'добавь задач', 'новую задач'])) return 'create_todo';
     if (_kw(m, ['task', 'todo', 'задач', 'задание', 'список дел', 'дела'])) return 'list_todos';
     if (_kw(m, ['contact', 'phone', 'email', 'address book',
                 'контакт', 'телефон', 'адресн'])) return 'list_contacts';
-    if (_kw(m, ['create note', 'add note', 'new note', 'write note',
-                'создай заметк', 'новая заметк', 'запиши заметк'])) return 'create_note';
     if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) return 'list_notes';
     if (_kw(m, ['file', 'folder', 'document',
                 'файл', 'папк', 'документ'])) return 'list_files';
     if (_kw(m, ['deck', 'board', 'kanban', 'card',
                 'борд', 'канбан', 'карточк'])) return 'list_deck';
+
+    // ── Generic calendar/event fallback (last!) ────────────────────────────
+    if (_kw(m, ['event', 'meeting', 'appointment', 'calendar',
+                'событи', 'встреч', 'календар'])) return 'upcoming';
+
     if (_kw(m, ['http', 'https', 'url', 'fetch', 'website',
                 'сайт', 'страниц'])) return 'web';
     return null;
