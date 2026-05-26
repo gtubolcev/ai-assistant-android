@@ -575,15 +575,21 @@ class ChatProvider extends ChangeNotifier {
       );
 
       final buffer = StringBuffer();
-      await for (final chunk in streamResult.stream) {
-        if (_stopRequested) break;
-        buffer.write(chunk);
-        _updateMessage(
-          assistantId,
-          _buildDisplay(completedTools, _stripToolMarkup(buffer.toString()),
-              pending: true),
-          MessageStatus.sending,
-        );
+      // Cactus SDK may call controller.addError(CactusCompletionResult) on
+      // failure — catch it here so we can still await streamResult.result below.
+      try {
+        await for (final chunk in streamResult.stream) {
+          if (_stopRequested) break;
+          buffer.write(chunk);
+          _updateMessage(
+            assistantId,
+            _buildDisplay(completedTools, _stripToolMarkup(buffer.toString()),
+                pending: true),
+            MessageStatus.sending,
+          );
+        }
+      } catch (_) {
+        // Stream error: result Future will have success=false with the message.
       }
 
       if (_stopRequested) {
@@ -604,6 +610,19 @@ class ChatProvider extends ChangeNotifier {
       }
 
       final iterResult = await streamResult.result;
+
+      // Surface native-side errors in a human-readable form.
+      if (!iterResult.success) {
+        final msg = iterResult.response?.isNotEmpty == true
+            ? iterResult.response!
+            : 'Неизвестная ошибка генерации';
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, '⚠️ $msg', pending: false),
+          MessageStatus.error,
+        );
+        return;
+      }
 
       if (iterResult.toolCalls.isEmpty) {
         final text = buffer.toString();
