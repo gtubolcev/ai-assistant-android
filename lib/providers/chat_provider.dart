@@ -21,19 +21,11 @@ const _kLocalSlug = 'local';
 /// SharedPreferences key for the last imported file path.
 const _kModelSourceKey = 'model_source_path';
 
-/// Builds the system prompt for the on-device LLM.
-String _buildSystemPrompt() {
-  // Keep this short — small models (1-2B) perform worse with long system prompts.
-  // The key rule: CALL tools immediately, never describe or explain them.
-  return 'You are a personal AI assistant with access to tools. '
-      'RULES: '
-      '1. When the user asks you to do something — CALL THE TOOL immediately. '
-      'Do NOT explain what tool you will use. Do NOT describe the tool call. Just call it. '
-      '2. For calendar/task operations: first call nc_calendar_list_calendars, '
-      'then use the exact calendar name returned. '
-      '3. Reply in the same language the user writes in. '
-      '4. Be brief.';
-}
+// NOTE: LFM2-1.2B-Tool requires the system message to contain ONLY the tool
+// list in <|tool_list_start|>...<|tool_list_end|> format. The Cactus native
+// layer injects this automatically — do NOT add a custom system message to
+// _history or it will break the tool list format. See Cactus function_calling
+// example: no system message, just user messages + tools in params.
 
 // ── Available Cactus models (tool-calling capable) ─────────────────────────────
 
@@ -219,10 +211,13 @@ class ChatProvider extends ChangeNotifier {
       _activeModelSlug = prefs.getString(_kActiveSlugKey) ?? _kDefaultSlug;
 
       _history
-        ..clear()
-        ..add(ChatMessage(role: 'system', content: _buildSystemPrompt()));
+        ..clear();
+      // Do NOT add a system message — LFM2 chat template puts the tool list
+      // in the system slot via <|tool_list_start|>; our text would break it.
 
-      _lm = CactusLM();
+      // Disable Cactus built-in tool filtering — we do our own intent-based
+      // filtering (_toolsFor) that already limits to ≤5 tools per request.
+      _lm = CactusLM(enableToolFiltering: false);
 
       // Check if model is already available — do NOT auto-download.
       final cached = await _isModelCached(_activeModelSlug);
@@ -330,7 +325,9 @@ class ChatProvider extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kActiveSlugKey, slug);
 
-      _lm = CactusLM();
+      // Disable Cactus built-in tool filtering — we do our own intent-based
+      // filtering (_toolsFor) that already limits to ≤5 tools per request.
+      _lm = CactusLM(enableToolFiltering: false);
 
       // Download only if not already in internal storage.
       final appDocDir = await getApplicationDocumentsDirectory();
@@ -410,7 +407,9 @@ class ChatProvider extends ChangeNotifier {
       statusText = 'Инициализация модели…';
       notifyListeners();
 
-      _lm = CactusLM();
+      // Disable Cactus built-in tool filtering — we do our own intent-based
+      // filtering (_toolsFor) that already limits to ≤5 tools per request.
+      _lm = CactusLM(enableToolFiltering: false);
       await _lm!.initializeModel(
         params: CactusInitParams(model: _kLocalSlug, contextSize: 4096),
       );
