@@ -137,8 +137,15 @@ class ChatProvider extends ChangeNotifier {
   // ── System prompt ─────────────────────────────────────────────────────────
 
   String _buildSystemPrompt(List<Map<String, dynamic>> tools) {
+    final now = DateTime.now();
+    final dateStr =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
     if (tools.isEmpty) {
-      return 'You are a helpful AI assistant. /no_think Answer concisely.';
+      return 'You are a helpful AI assistant. /no_think\n'
+          'Current date and time: $dateStr\n'
+          'Answer concisely.';
     }
 
     // Compact one-line format: saves ~10× tokens vs full JSON schema.
@@ -156,11 +163,6 @@ class ChatProvider extends ChangeNotifier {
       }).join(', ');
       return '- $name($params)';
     }).join('\n');
-
-    final now = DateTime.now();
-    final dateStr =
-        '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')} '
-        '${now.hour.toString().padLeft(2,'0')}:${now.minute.toString().padLeft(2,'0')}';
 
     return '''You are a helpful AI assistant. /no_think
 Current date and time: $dateStr
@@ -622,8 +624,8 @@ $toolLines''';
       try {
         final json = jsonDecode(blockMatch.group(1)!) as Map<String, dynamic>;
         final name = json['name'] as String?;
-        final args = json['arguments'] as Map<String, dynamic>?;
-        if (name != null && args != null) return (name, args);
+        final args = (json['arguments'] as Map<String, dynamic>?) ?? {};
+        if (name != null) return (name, args);
       } catch (_) {}
     }
 
@@ -635,8 +637,9 @@ $toolLines''';
         final json = jsonDecode(extracted) as Map<String, dynamic>;
         // Support both {"tool":...} and {"name":...} keys.
         final name = (json['tool'] ?? json['name']) as String?;
-        final args = json['arguments'] as Map<String, dynamic>?;
-        if (name != null && args != null) return (name, args);
+        // arguments may be omitted for no-arg tools — default to {}.
+        final args = (json['arguments'] as Map<String, dynamic>?) ?? {};
+        if (name != null) return (name, args);
       } catch (_) {}
     }
 
@@ -733,9 +736,11 @@ $toolLines''';
         // ChatML tool call blocks.
         .replaceAll(
             RegExp(r'<tool_call>.*?</tool_call>', dotAll: true), '')
-        // Raw JSON tool call objects.
+        // Raw JSON tool call objects (with or without arguments field).
         .replaceAll(
-            RegExp(r'\{[^{}]*"tool"\s*:\s*"[^"]*"[^{}]*"arguments"[^{}]*\}',
+            RegExp(r'\{[^{}]*"tool"\s*:\s*"[^"]*"[^{}]*\}', dotAll: true), '')
+        .replaceAll(
+            RegExp(r'\{[^{}]*"name"\s*:\s*"[^"]*"[^{}]*"arguments"[^{}]*\}',
                 dotAll: true),
             '')
         // ChatML / LFM special tokens.
