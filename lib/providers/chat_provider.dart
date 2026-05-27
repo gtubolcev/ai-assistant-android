@@ -530,6 +530,44 @@ $toolLines''';
     // Add the user message to the engine chat context.
     chat.addUser(userMessage);
 
+    // ── Auto-trigger: task queries bypass model tool-call decision ───────────
+    // LFM2-1.2B is too small to reliably call tools for multi-step tasks.
+    // For task/todo queries we call nc_calendar_list_calendars ourselves,
+    // then cascade to nc_calendar_list_todos, and feed the combined result
+    // directly into the chat so the model only needs to format it.
+    if (isTaskQuery) {
+      completedTools.add('🔧 nc_calendar_list_calendars…');
+      _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
+          MessageStatus.sending);
+
+      final calsResult = await _executeTool('nc_calendar_list_calendars', {});
+      calledTools.add('nc_calendar_list_calendars:{}');
+      completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_calendars ✓';
+
+      final calIds = _extractCalendarIds(calsResult);
+      completedTools.add('🔧 nc_calendar_list_todos…');
+      _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
+          MessageStatus.sending);
+
+      final todoParts = <String>[];
+      for (final id in calIds) {
+        if (id.contains('birthday') || id.contains('contact_birthday')) continue;
+        final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
+        if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
+            !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
+          todoParts.add(todos);
+        }
+      }
+      final combined = todoParts.isEmpty ? 'No tasks found in any calendar.' : todoParts.join('\n');
+      calledTools.add('nc_calendar_list_todos:{}');
+      completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_todos ✓';
+
+      chat.addUser('<tool_result name="nc_calendar_list_todos">\n$combined\n</tool_result>');
+      const taskPrefix = 'Here is what I found:';
+      chat.addAssistant(taskPrefix);
+      assistantPrefix = taskPrefix;
+    }
+
     for (int iter = 0; iter < maxIterations; iter++) {
       if (_stopRequested) {
         _stopRequested = false;
@@ -853,7 +891,15 @@ $toolLines''';
     }
 
     try {
-      final json = jsonDecode(raw);
+      // Strip markdown code fences that some MCP servers wrap around JSON
+      // (e.g. ```json\n{...}\n```).
+      String src = raw.trim();
+      if (src.startsWith('```')) {
+        final nl = src.indexOf('\n');
+        if (nl != -1) src = src.substring(nl + 1);
+        if (src.endsWith('```')) src = src.substring(0, src.length - 3).trimRight();
+      }
+      final json = jsonDecode(src);
 
       // ── Calendar list ──────────────────────────────────────────────────────
       if (toolName == 'nc_calendar_list_calendars') {
