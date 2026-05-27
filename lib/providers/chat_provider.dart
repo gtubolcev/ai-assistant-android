@@ -502,6 +502,9 @@ $toolLines''';
     const maxIterations = 5;
     // Track (toolName, argsJson) to detect identical repeated calls.
     final calledTools = <String>{};
+    // Prefix injected as a partial assistant message after a tool result,
+    // to steer the model into producing text rather than another JSON call.
+    String assistantPrefix = '';
 
     // Select only the tools relevant to this message — keeps the system
     // prompt small so prefill stays fast on a phone CPU.
@@ -568,9 +571,12 @@ $toolLines''';
                   : snippet;
               debugPrint('[AI] tok=$tokenCount tail="$tail"');
             }
+            final partial = assistantPrefix.isNotEmpty
+                ? '$assistantPrefix ${buffer.toString()}'
+                : buffer.toString();
             _updateMessage(
               assistantId,
-              _buildDisplay(completedTools, _cleanOutput(buffer.toString()),
+              _buildDisplay(completedTools, _cleanOutput(partial),
                   pending: true),
               MessageStatus.sending,
             );
@@ -586,10 +592,13 @@ $toolLines''';
 
       if (_stopRequested) {
         _stopRequested = false;
+        final stoppedText = assistantPrefix.isNotEmpty
+            ? '$assistantPrefix ${buffer.toString()}'
+            : buffer.toString();
         _updateMessage(
           assistantId,
           _buildDisplay(completedTools,
-              '${_cleanOutput(buffer.toString())}\n⏹ остановлено'.trim(),
+              '${_cleanOutput(stoppedText)}\n⏹ остановлено'.trim(),
               pending: false),
           MessageStatus.done,
         );
@@ -597,19 +606,24 @@ $toolLines''';
       }
 
       final rawText = buffer.toString();
+      // Include any injected prefix so the final display is complete.
+      final displayText = assistantPrefix.isNotEmpty
+          ? '$assistantPrefix $rawText'
+          : rawText;
       final call = _parseToolCall(rawText);
 
       if (call == null) {
         // No tool call — this is the final answer.
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, _cleanOutput(rawText), pending: false),
+          _buildDisplay(completedTools, _cleanOutput(displayText), pending: false),
           MessageStatus.done,
         );
         return;
       }
 
       // ── Execute tool ─────────────────────────────────────────────────────
+      assistantPrefix = ''; // reset: the model chose to call a tool instead
       final (toolName, toolArgs) = call;
       final callKey = '$toolName:${jsonEncode(toolArgs)}';
       debugPrint('[AI] tool call: $toolName($toolArgs)');
@@ -619,7 +633,7 @@ $toolLines''';
         debugPrint('[AI] ⚠️ duplicate tool call detected, stopping loop');
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, _cleanOutput(rawText), pending: false),
+          _buildDisplay(completedTools, _cleanOutput(displayText), pending: false),
           MessageStatus.done,
         );
         return;
@@ -639,12 +653,16 @@ $toolLines''';
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
-      // Feed result + explicit instruction to respond (not loop).
+      // Feed result, then add a partial assistant prefix so the model
+      // continues with plain text instead of generating another JSON tool call.
       chat.addUser(
-        '<tool_result name="$toolName">\n$toolResult\n</tool_result>\n'
-        'The tool returned the data above. Present it clearly to the user. '
-        'Do NOT say the tool failed or returned nothing — the data is in the result above.',
+        '<tool_result name="$toolName">\n$toolResult\n</tool_result>',
       );
+      // Seed the assistant turn with a neutral opener so the model continues
+      // with prose rather than emitting a JSON tool call.
+      const prefix = 'Here is what I found:';
+      chat.addAssistant(prefix);
+      assistantPrefix = prefix;
     }
 
     _updateMessage(
