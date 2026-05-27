@@ -100,9 +100,10 @@ class ChatProvider extends ChangeNotifier {
       'list task', 'show task', 'my task', 'list todo', 'show todo',
       'список задач', 'покажи задачи', 'мои задачи',
     ])) {
-      // Include list_calendars so the model can discover the exact calendar
-      // name before calling list_todos (avoids guessing "My Calendar" etc.).
-      return pick(['nc_calendar_list_calendars', 'nc_calendar_list_todos']);
+      // Only give list_calendars — LFM2-1.2B ignores multi-step instructions
+      // and skips straight to list_todos with a made-up calendar name.
+      // The agent loop auto-calls list_todos after list_calendars returns.
+      return pick(['nc_calendar_list_calendars']);
     }
 
     if (_kw(m, [
@@ -505,6 +506,12 @@ $toolLines''';
     // Prefix injected as a partial assistant message after a tool result,
     // to steer the model into producing text rather than another JSON call.
     String assistantPrefix = '';
+    // Whether this request originally asked for tasks/todos.
+    // Used to auto-call list_todos after list_calendars returns.
+    final isTaskQuery = _kw(userMessage.toLowerCase(), [
+      'list task', 'show task', 'my task', 'list todo', 'show todo',
+      'список задач', 'покажи задачи', 'мои задачи',
+    ]);
 
     // Select only the tools relevant to this message — keeps the system
     // prompt small so prefill stays fast on a phone CPU.
@@ -653,6 +660,36 @@ $toolLines''';
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
+      // ── Auto-cascade: list_calendars → list_todos for task queries ──────────
+      // LFM2-1.2B ignores multi-step instructions, so we do the second step
+      // automatically: after the model lists calendars, we call list_todos for
+      // each non-birthday calendar and combine results.
+      if (toolName == 'nc_calendar_list_calendars' && isTaskQuery) {
+        final calIds = _extractCalendarIds(toolResult);
+        completedTools.add('🔧 nc_calendar_list_todos…');
+        _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
+            MessageStatus.sending);
+        final todoParts = <String>[];
+        for (final id in calIds) {
+          if (id.contains('birthday') || id.contains('contact_birthday')) continue;
+          final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
+          if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
+              !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
+            todoParts.add(todos);
+          }
+        }
+        final combined = todoParts.isEmpty ? 'No tasks found in any calendar.' : todoParts.join('\n');
+        completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_todos ✓';
+        calledTools.add('nc_calendar_list_todos:{}'); // prevent model from re-calling
+
+        // Feed combined todos to model for presentation.
+        chat.addUser('<tool_result name="nc_calendar_list_todos">\n$combined\n</tool_result>');
+        const prefix = 'Here is what I found:';
+        chat.addAssistant(prefix);
+        assistantPrefix = prefix;
+        continue; // let model generate the final text answer
+      }
+
       // Feed result, then add a partial assistant prefix so the model
       // continues with plain text instead of generating another JSON tool call.
       chat.addUser(
@@ -788,6 +825,19 @@ $toolLines''';
     }
     final raw = await mcp.executeTool(name, args);
     return _humanizeToolResult(name, raw);
+  }
+
+  /// Extracts calendar IDs from a humanized nc_calendar_list_calendars result.
+  ///
+  /// Humanized format:
+  ///   "Found N calendar(s):\n• Name (id: calId)\n• ..."
+  static List<String> _extractCalendarIds(String humanized) {
+    final ids = <String>[];
+    final re = RegExp(r'\(id:\s*([^)]+)\)');
+    for (final m in re.allMatches(humanized)) {
+      ids.add(m.group(1)!.trim());
+    }
+    return ids;
   }
 
   /// Converts raw MCP tool results to compact human-readable text.
