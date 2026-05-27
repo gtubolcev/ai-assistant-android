@@ -860,9 +860,13 @@ $toolLines''';
         final cals = (json['calendars'] as List?) ?? [];
         if (cals.isEmpty) return 'No calendars found.';
         final lines = cals.map((c) {
-          final name = c['display_name'] ?? c['name'] ?? '?';
-          final id = (c['href'] as String? ?? '').split('/').where((s) => s.isNotEmpty).last;
-          return '• $name (id: $id)';
+          final displayName = c['display_name'] ?? c['name'] ?? '?';
+          // Prefer 'name' (CalDAV collection slug, used by nc_calendar_list_todos).
+          // Fall back to last segment of href if 'name' is absent.
+          final id = (c['name'] as String?)?.isNotEmpty == true
+              ? c['name'] as String
+              : (c['href'] as String? ?? '').split('/').where((s) => s.isNotEmpty).last;
+          return '• $displayName (id: $id)';
         }).join('\n');
         return 'Found ${cals.length} calendar(s):\n$lines';
       }

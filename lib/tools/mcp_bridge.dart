@@ -105,7 +105,12 @@ class McpBridge {
           parts.add(item.toString());
         }
       }
-      return parts.isEmpty ? '(no content)' : parts.join('\n');
+      final text = parts.isEmpty ? '(no content)' : parts.join('\n');
+      // Propagate MCP error flag so callers can detect failures.
+      if (result.isError == true) {
+        return 'Error: $text';
+      }
+      return text;
     } catch (e) {
       return 'Ошибка MCP инструмента "$name": $e';
     }
