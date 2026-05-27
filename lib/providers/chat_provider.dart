@@ -228,6 +228,82 @@ $toolsJson''';
     notifyListeners();
   }
 
+  // ── Download model from URL ───────────────────────────────────────────────
+
+  /// Download progress: null = idle, 0.0–1.0 = in progress, 1.0 = done.
+  double? downloadProgress;
+
+  HttpClient? _downloadClient;
+
+  /// Downloads a GGUF model from [url], saves it to app storage as [filename],
+  /// then loads it as the active model. Calls notifyListeners with progress.
+  Future<void> downloadModelFromUrl(String url, String filename) async {
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDocDir.path}/downloaded_models');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/$filename');
+
+    isModelReady = false;
+    errorText = null;
+    downloadProgress = 0.0;
+    statusText = 'Загрузка 0%';
+    notifyListeners();
+
+    try {
+      _downloadClient = HttpClient();
+      _downloadClient!.userAgent = 'ai-assistant/1.0';
+
+      // Follow redirects manually so we can track them.
+      final request = await _downloadClient!.getUrl(Uri.parse(url));
+      final response = await request.close();
+
+      if (response.statusCode != 200) {
+        throw Exception('Сервер вернул ${response.statusCode}');
+      }
+
+      final total = response.contentLength; // -1 if unknown
+      var received = 0;
+      final sink = file.openWrite();
+
+      await for (final chunk in response) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) {
+          downloadProgress = received / total;
+          statusText =
+              'Загрузка ${(downloadProgress! * 100).toStringAsFixed(0)}%'
+              ' (${(received / 1048576).toStringAsFixed(0)} / ${(total / 1048576).toStringAsFixed(0)} МБ)';
+        } else {
+          statusText =
+              'Загрузка ${(received / 1048576).toStringAsFixed(0)} МБ…';
+        }
+        notifyListeners();
+      }
+      await sink.close();
+
+      downloadProgress = null;
+      _downloadClient = null;
+
+      await importModelFromFile(file.path);
+    } catch (e) {
+      downloadProgress = null;
+      _downloadClient = null;
+      errorText = 'Ошибка загрузки: $e';
+      statusText = 'Ошибка';
+      if (await file.exists()) await file.delete();
+      notifyListeners();
+    }
+  }
+
+  /// Cancels an in-progress download.
+  void cancelDownload() {
+    _downloadClient?.close(force: true);
+    _downloadClient = null;
+    downloadProgress = null;
+    statusText = 'Загрузка отменена';
+    notifyListeners();
+  }
+
   // ── MCP connection ────────────────────────────────────────────────────────
 
   Future<void> _connectMcp() async {
@@ -462,40 +538,38 @@ $toolsJson''';
   /// Parses a tool call from [text], returning `(toolName, args)` or null.
   ///
   /// Supported formats:
-  ///   1. JSON line: {"tool":"name","arguments":{...}}
-  ///   2. Wrapped:   <tool_call>{"name":"name","arguments":{...}}</tool_call>
-  ///   3. LFM2:      <|tool_call_start|>[func(arg="val")]<|tool_call_end|>
+  ///   1. <tool_call>{"name":"...","arguments":{...}}</tool_call>  — LFM2.5-Nova / ChatML
+  ///   2. {"tool":"name","arguments":{...}}                        — generic JSON line
+  ///   3. {"name":"...","arguments":{...}}                         — alternate JSON line
+  ///   4. <|tool_call_start|>[func(arg="val")]<|tool_call_end|>    — LFM2 native
   (String, Map<String, dynamic>)? _parseToolCall(String text) {
-    // Format 1 & 2: JSON-based (Qwen3, generic)
-    final jsonMatch = RegExp(
-            r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^}]*\})',
-            dotAll: true)
-        .firstMatch(text);
-    if (jsonMatch != null) {
+    // Format 1: <tool_call>…</tool_call> — extract inner JSON fully
+    final blockMatch =
+        RegExp(r'<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>', dotAll: true)
+            .firstMatch(text);
+    if (blockMatch != null) {
       try {
-        final name = jsonMatch.group(1)!;
-        final argsJson = jsonMatch.group(2)!;
-        final args =
-            jsonDecode(argsJson) as Map<String, dynamic>;
-        return (name, args);
+        final json = jsonDecode(blockMatch.group(1)!) as Map<String, dynamic>;
+        final name = json['name'] as String?;
+        final args = json['arguments'] as Map<String, dynamic>?;
+        if (name != null && args != null) return (name, args);
       } catch (_) {}
     }
 
-    // Format: {"name": "...", "arguments": {...}}
-    final nameArgMatch = RegExp(
-            r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^}]*\})',
-            dotAll: true)
-        .firstMatch(text);
-    if (nameArgMatch != null) {
+    // Format 2 & 3: bare JSON object anywhere in text — use a bracket-counting
+    // extractor so nested objects parse correctly.
+    final extracted = _extractFirstJsonObject(text);
+    if (extracted != null) {
       try {
-        final name = nameArgMatch.group(1)!;
-        final argsJson = nameArgMatch.group(2)!;
-        final args = jsonDecode(argsJson) as Map<String, dynamic>;
-        return (name, args);
+        final json = jsonDecode(extracted) as Map<String, dynamic>;
+        // Support both {"tool":...} and {"name":...} keys.
+        final name = (json['tool'] ?? json['name']) as String?;
+        final args = json['arguments'] as Map<String, dynamic>?;
+        if (name != null && args != null) return (name, args);
       } catch (_) {}
     }
 
-    // Format 3: LFM2 <|tool_call_start|>[func(arg="val")]<|tool_call_end|>
+    // Format 4: LFM2 <|tool_call_start|>[func(key="val")]<|tool_call_end|>
     final lfm2Match = RegExp(
             r'<\|tool_call_start\|>\s*\[(\w+)\(([^)]*)\)\]\s*<\|tool_call_end\|>',
             dotAll: true)
@@ -507,6 +581,25 @@ $toolsJson''';
       return (name, args);
     }
 
+    return null;
+  }
+
+  /// Finds the first `{…}` JSON object in [text] using bracket counting,
+  /// so nested objects are included correctly.
+  static String? _extractFirstJsonObject(String text) {
+    int depth = 0;
+    int start = -1;
+    for (int i = 0; i < text.length; i++) {
+      if (text[i] == '{') {
+        if (depth == 0) start = i;
+        depth++;
+      } else if (text[i] == '}') {
+        depth--;
+        if (depth == 0 && start != -1) {
+          return text.substring(start, i + 1);
+        }
+      }
+    }
     return null;
   }
 

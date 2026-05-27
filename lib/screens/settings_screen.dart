@@ -8,6 +8,52 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/chat_provider.dart';
 
+// ── Curated model list ─────────────────────────────────────────────────────────
+
+class _ModelEntry {
+  final String name;
+  final String description;
+  final int sizeMb;
+  final String filename;
+  final String url;
+  const _ModelEntry({
+    required this.name,
+    required this.description,
+    required this.sizeMb,
+    required this.filename,
+    required this.url,
+  });
+}
+
+const _kCuratedModels = [
+  _ModelEntry(
+    name: 'LFM2.5 1.2B · Function Calling (рекомендуется)',
+    description: 'Специально дообучена для вызова инструментов (tool calling). '
+        'Формат ChatML. 731 МБ.',
+    sizeMb: 731,
+    filename: 'LFM2.5-1.2B-Nova-Function-Calling.Q4_K_M.gguf',
+    url: 'https://huggingface.co/NovachronoAI/LFM2.5-1.2B-Nova-Function-Calling-GGUF'
+        '/resolve/main/LFM2.5-1.2B-Nova-Function-Calling.Q4_K_M.gguf',
+  ),
+  _ModelEntry(
+    name: 'LFM2.5 1.2B · Function Calling (компакт Q3)',
+    description: 'То же, но квантизация Q3_K_M — меньше памяти, чуть ниже качество. '
+        '600 МБ.',
+    sizeMb: 600,
+    filename: 'LFM2.5-1.2B-Nova-Function-Calling.Q3_K_M.gguf',
+    url: 'https://huggingface.co/NovachronoAI/LFM2.5-1.2B-Nova-Function-Calling-GGUF'
+        '/resolve/main/LFM2.5-1.2B-Nova-Function-Calling.Q3_K_M.gguf',
+  ),
+  _ModelEntry(
+    name: 'Qwen 2.5 1.5B Instruct Q4_K_M',
+    description: 'Отличный JSON tool calling, стабильный. Чуть больше — 1.1 ГБ.',
+    sizeMb: 1120,
+    filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF'
+        '/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+  ),
+];
+
 /// Keys that are saved/restored in settings backup.
 const _kBackupKeys = [
   'mcp_url',
@@ -109,6 +155,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       setState(() => _savingMcp = false);
     }
+  }
+
+  // ── Model download (bottom sheet) ──────────────────────────────────────────
+
+  void _showModelPicker() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _ModelPickerSheet(
+        onDownload: (entry) {
+          Navigator.pop(context);
+          context.read<ChatProvider>().downloadModelFromUrl(
+                entry.url,
+                entry.filename,
+              );
+        },
+      ),
+    );
   }
 
   // ── Model file picker ──────────────────────────────────────────────────────
@@ -298,54 +365,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader('Модель'),
           const SizedBox(height: 4),
           const Text(
-            'Выберите .gguf файл с устройства. Работают любые модели '
-            'в формате llama.cpp GGUF (LFM2, Qwen3, Llama, Mistral…)',
+            'Скачайте готовую модель из интернета или выберите '
+            'свой .gguf файл с устройства.',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 12),
-          Consumer<ChatProvider>(
-            builder: (_, provider, __) => _StatusRow(
-              ok: provider.isModelReady,
-              text: provider.isModelReady
-                  ? 'Активна: ${provider.activeModelName}'
-                  : provider.statusText,
-            ),
-          ),
-          const SizedBox(height: 12),
+
+          // Status + progress
           Consumer<ChatProvider>(
             builder: (_, provider, __) {
-              if (provider.activeModelPath.isNotEmpty) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+              final downloading = provider.downloadProgress != null;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _StatusRow(
+                    ok: provider.isModelReady,
+                    text: provider.isModelReady
+                        ? 'Активна: ${provider.activeModelName}'
+                        : provider.statusText,
+                  ),
+                  if (downloading) ...[
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: provider.downloadProgress,
+                      minHeight: 6,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          provider.statusText,
+                          style: const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 24),
+                            foregroundColor: Colors.red,
+                          ),
+                          onPressed: provider.cancelDownload,
+                          child: const Text('Отмена', style: TextStyle(fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (provider.activeModelPath.isNotEmpty && !downloading) ...[
+                    const SizedBox(height: 8),
                     _HintCard(
                       icon: Icons.insert_drive_file_outlined,
                       text: 'Файл: ${provider.activeModelName}',
                     ),
-                    const SizedBox(height: 8),
                   ],
-                );
-              }
-              return const SizedBox.shrink();
+                ],
+              );
             },
           ),
-          OutlinedButton.icon(
-            onPressed: _pickingModel ? null : _pickModel,
-            icon: _pickingModel
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.folder_open_outlined),
-            label: const Text('Выбрать файл .gguf'),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Рекомендуем LFM2-1.2B-Tool-Q4_K_M.gguf — обучена специально '
-            'для инструментов. Скачай с HuggingFace: '
-            'liquid-ai/LFM2-1.2B-Tool',
-            style: TextStyle(fontSize: 11, color: Colors.grey),
+
+          const SizedBox(height: 12),
+
+          // Buttons: download or pick local
+          Consumer<ChatProvider>(
+            builder: (_, provider, __) {
+              final busy = _pickingModel || provider.downloadProgress != null;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  FilledButton.icon(
+                    onPressed: busy ? null : _showModelPicker,
+                    icon: const Icon(Icons.download_outlined),
+                    label: const Text('Скачать модель из интернета'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: busy ? null : _pickModel,
+                    icon: _pickingModel
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.folder_open_outlined),
+                    label: const Text('Выбрать файл .gguf'),
+                  ),
+                ],
+              );
+            },
           ),
 
           const SizedBox(height: 32),
@@ -589,6 +695,86 @@ class _HintCard extends StatelessWidget {
             child: Text(
               text,
               style: TextStyle(fontSize: 12, color: scheme.onSecondaryContainer),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Model picker bottom sheet ──────────────────────────────────────────────────
+
+class _ModelPickerSheet extends StatelessWidget {
+  final void Function(_ModelEntry entry) onDownload;
+  const _ModelPickerSheet({required this.onDownload});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (_, scrollCtrl) => Column(
+        children: [
+          // handle
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: scheme.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'Выберите модель',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          Expanded(
+            child: ListView.separated(
+              controller: scrollCtrl,
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+              itemCount: _kCuratedModels.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (_, i) {
+                final m = _kCuratedModels[i];
+                return Card(
+                  margin: EdgeInsets.zero,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          m.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          m.description,
+                          style: TextStyle(
+                              fontSize: 12, color: scheme.onSurfaceVariant),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: () => onDownload(m),
+                            icon: const Icon(Icons.download_rounded, size: 18),
+                            label: Text('Скачать (${m.sizeMb >= 1000 ? '${(m.sizeMb / 1024).toStringAsFixed(1)} ГБ' : '${m.sizeMb} МБ'})'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
           ),
         ],
