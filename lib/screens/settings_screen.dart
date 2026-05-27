@@ -45,8 +45,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Model fields
   bool _pickingModel = false;
-  String _modelFileName = '';
-  Set<String> _downloadedSlugs = {};
 
   // Backup fields
   bool _exporting = false;
@@ -60,7 +58,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSaved() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedPath = prefs.getString('model_source_path') ?? '';
     setState(() {
       _urlCtrl.text = prefs.getString('mcp_url') ?? '';
       _mcpUserCtrl.text = prefs.getString('mcp_user') ?? '';
@@ -69,18 +66,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _caldavUrlCtrl.text = prefs.getString('caldav_url') ?? '';
       _caldavUserCtrl.text = prefs.getString('caldav_user') ?? '';
       _caldavPassCtrl.text = prefs.getString('caldav_password') ?? '';
-      if (savedPath.isNotEmpty) {
-        _modelFileName = savedPath.split('/').last;
-      }
     });
-    await _refreshDownloadedSlugs();
-  }
-
-  Future<void> _refreshDownloadedSlugs() async {
-    if (!mounted) return;
-    final slugs =
-        await context.read<ChatProvider>().downloadedModelSlugs();
-    if (mounted) setState(() => _downloadedSlugs = slugs);
   }
 
   // ── CalDAV save ────────────────────────────────────────────────────────────
@@ -145,10 +131,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    setState(() {
-      _pickingModel = true;
-      _modelFileName = path.split('/').last;
-    });
+    setState(() => _pickingModel = true);
 
     await context.read<ChatProvider>().importModelFromFile(path);
 
@@ -157,7 +140,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(provider.isModelReady
-              ? '✅ Модель загружена: $_modelFileName'
+              ? '✅ Модель загружена: ${provider.activeModelName}'
               : '⚠️ ${provider.errorText ?? 'Не удалось загрузить модель'}'),
         ),
       );
@@ -231,7 +214,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _loadSaved();
 
       if (mounted) {
-        // Reconnect MCP with restored credentials.
         await context.read<ChatProvider>().saveMcpConfig(
               url: prefs.getString('mcp_url') ?? '',
               user: prefs.getString('mcp_user') ?? '',
@@ -316,8 +298,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader('Модель'),
           const SizedBox(height: 4),
           const Text(
-            'Скачайте одну из готовых моделей или выберите '
-            'свой .gguf файл с устройства.',
+            'Выберите .gguf файл с устройства. Работают любые модели '
+            'в формате llama.cpp GGUF (LFM2, Qwen3, Llama, Mistral…)',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 12),
@@ -325,57 +307,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
             builder: (_, provider, __) => _StatusRow(
               ok: provider.isModelReady,
               text: provider.isModelReady
-                  ? 'Активна: ${provider.activeModelSlug}'
+                  ? 'Активна: ${provider.activeModelName}'
                   : provider.statusText,
             ),
           ),
           const SizedBox(height: 12),
-          // List of available Cactus models
           Consumer<ChatProvider>(
-            builder: (_, provider, __) => Column(
-              children: kAvailableCactusModels.map((m) {
-                final isActive = provider.isModelReady &&
-                    provider.activeModelSlug == m.slug;
-                final isDownloaded = _downloadedSlugs.contains(m.slug);
-                final isBusy = !provider.isModelReady &&
-                    provider.activeModelSlug == m.slug &&
-                    (provider.statusText.contains('Загр') ||
-                        provider.statusText.contains('Инициализ'));
-                return _ModelCard(
-                  model: m,
-                  isActive: isActive,
-                  isDownloaded: isDownloaded,
-                  isLoading: isBusy,
-                  onAction: () async {
-                    await context
-                        .read<ChatProvider>()
-                        .downloadAndLoadModel(m.slug);
-                    await _refreshDownloadedSlugs();
-                  },
+            builder: (_, provider, __) {
+              if (provider.activeModelPath.isNotEmpty) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _HintCard(
+                      icon: Icons.insert_drive_file_outlined,
+                      text: 'Файл: ${provider.activeModelName}',
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                 );
-              }).toList(),
-            ),
+              }
+              return const SizedBox.shrink();
+            },
           ),
-          const SizedBox(height: 16),
-          const Row(
-            children: [
-              Expanded(child: Divider()),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12),
-                child: Text('или свой файл',
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
-              ),
-              Expanded(child: Divider()),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (_modelFileName.isNotEmpty) ...[
-            _HintCard(
-              icon: Icons.insert_drive_file_outlined,
-              text: 'Файл: $_modelFileName',
-            ),
-            const SizedBox(height: 8),
-          ],
           OutlinedButton.icon(
             onPressed: _pickingModel ? null : _pickModel,
             icon: _pickingModel
@@ -389,8 +342,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Только модели, совместимые с llama.cpp. '
-            'LFM2.5-Instruct не поддерживается Cactus SDK.',
+            'Рекомендуем LFM2-1.2B-Tool-Q4_K_M.gguf — обучена специально '
+            'для инструментов. Скачай с HuggingFace: '
+            'liquid-ai/LFM2-1.2B-Tool',
             style: TextStyle(fontSize: 11, color: Colors.grey),
           ),
 
@@ -542,8 +496,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.psychology_outlined),
               title: const Text('AI Assistant'),
               subtitle: Text(
-                'Офлайн-ассистент · Cactus SDK + MCP\n'
-                'Модель: ${p.activeModelSlug}',
+                'Офлайн-ассистент · llama_cpp_dart + MCP\n'
+                'Модель: ${p.activeModelName.isEmpty ? "(не выбрана)" : p.activeModelName}',
               ),
               isThreeLine: true,
             ),
@@ -638,136 +592,6 @@ class _HintCard extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ModelCard extends StatelessWidget {
-  final CactusModelInfo model;
-  final bool isActive;
-  final bool isDownloaded;
-  final bool isLoading;
-  /// Called both for "Скачать" and "Выбрать".
-  final VoidCallback onAction;
-
-  const _ModelCard({
-    required this.model,
-    required this.isActive,
-    required this.isDownloaded,
-    required this.isLoading,
-    required this.onAction,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final sizeTxt = model.sizeMb >= 1000
-        ? '${(model.sizeMb / 1000).toStringAsFixed(1)} ГБ'
-        : '${model.sizeMb} МБ';
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      color: isActive
-          ? scheme.primaryContainer.withOpacity(0.4)
-          : scheme.surfaceContainerHighest.withOpacity(0.5),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: isActive
-            ? BorderSide(color: scheme.primary, width: 1.5)
-            : BorderSide.none,
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        model.name,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                          color: isActive ? scheme.primary : null,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: scheme.secondaryContainer,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          sizeTxt,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: scheme.onSecondaryContainer,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      if (isDownloaded && !isActive) ...[
-                        Icon(Icons.download_done_rounded,
-                            size: 11, color: scheme.secondary),
-                        const SizedBox(width: 3),
-                      ],
-                      Expanded(
-                        child: Text(
-                          model.description,
-                          style: TextStyle(
-                              fontSize: 11, color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            if (isActive)
-              Icon(Icons.check_circle_rounded,
-                  color: scheme.primary, size: 20)
-            else if (isLoading)
-              const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-            else if (isDownloaded)
-              TextButton(
-                onPressed: onAction,
-                style: TextButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  foregroundColor: scheme.primary,
-                ),
-                child: const Text('Выбрать'),
-              )
-            else
-              TextButton(
-                onPressed: onAction,
-                style: TextButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                child: const Text('Скачать'),
-              ),
-          ],
-        ),
       ),
     );
   }

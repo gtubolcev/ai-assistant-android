@@ -1,7 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:cactus/cactus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,67 +10,8 @@ import '../models/message.dart';
 import '../tools/mcp_bridge.dart';
 import '../tools/web_fetch_tool.dart';
 
-/// Default Cactus model slug used when nothing else is configured.
-const _kDefaultSlug = 'lfm2-1.2b-tool';
-
-/// SharedPreferences key for the active model slug.
-const _kActiveSlugKey = 'active_model_slug';
-
-
-// NOTE: LFM2-1.2B-Tool requires the system message to contain ONLY the tool
-// list in <|tool_list_start|>...<|tool_list_end|> format. The Cactus native
-// layer injects this automatically — do NOT add a custom system message to
-// _history or it will break the tool list format. See Cactus function_calling
-// example: no system message, just user messages + tools in params.
-
-// ── Available Cactus models (tool-calling capable) ─────────────────────────────
-
-class CactusModelInfo {
-  final String slug;
-  final String name;
-  final int sizeMb;
-  final String description;
-  /// Whether this model supports Cactus tool-calling format.
-  /// FunctionGemma uses a different format and crashes with code -1 when tools
-  /// are passed — mark it false so we skip tools for it entirely.
-  final bool supportsToolCalling;
-
-  const CactusModelInfo({
-    required this.slug,
-    required this.name,
-    required this.sizeMb,
-    required this.description,
-    this.supportsToolCalling = true,
-  });
-}
-
-const kAvailableCactusModels = <CactusModelInfo>[
-  CactusModelInfo(
-    slug: 'functiongemma-270m',
-    name: 'FunctionGemma 3 270M',
-    sizeMb: 182,
-    description: 'Компактная, только текст (без tool calling)',
-    supportsToolCalling: false,
-  ),
-  CactusModelInfo(
-    slug: 'qwen3-0.6',
-    name: 'Qwen3 0.6B',
-    sizeMb: 394,
-    description: 'Маленькая, хорошо работает с инструментами',
-  ),
-  CactusModelInfo(
-    slug: 'lfm2-1.2b-tool',
-    name: 'LFM2 1.2B Tool ★',
-    sizeMb: 729,
-    description: 'Рекомендуется — обучена специально для tool calling',
-  ),
-  CactusModelInfo(
-    slug: 'qwen3-1.7',
-    name: 'Qwen3 1.7B',
-    sizeMb: 1161,
-    description: 'Лучший tool calling, занимает больше памяти',
-  ),
-];
+// SharedPreferences key for the saved GGUF model path.
+const _kModelPathKey = 'llama_model_path';
 
 // ── Provider ───────────────────────────────────────────────────────────────────
 
@@ -83,15 +25,20 @@ class ChatProvider extends ChangeNotifier {
   String? errorText;
   bool get isMcpConnected => _mcp?.isConnected ?? false;
 
-  /// Slug of the currently active model (or empty if none loaded).
-  String get activeModelSlug => _activeModelSlug;
+  /// Absolute path to the currently active GGUF model file.
+  String get activeModelPath => _activeModelPath;
+
+  /// Filename of the active model (basename of activeModelPath).
+  String get activeModelName =>
+      _activeModelPath.isEmpty ? '' : _activeModelPath.split('/').last;
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  CactusLM? _lm;
+  LlamaEngine? _engine;
+  EngineChat? _chat;
   McpBridge? _mcp;
   bool _stopRequested = false;
-  String _activeModelSlug = _kDefaultSlug;
+  String _activeModelPath = '';
 
   /// Request the current generation to stop at the next safe checkpoint.
   void stopGeneration() {
@@ -99,60 +46,62 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Full MCP tool list (cached from connection).
-  List<CactusTool> get _allMcpTools => _mcp?.tools ?? [];
+  // ── Tool helpers ──────────────────────────────────────────────────────────
 
-  // ── Tool selection ────────────────────────────────────────────────────────
-  //
-  // No custom intent detection. We pick a small category of Nextcloud tools
-  // based on broad keywords and let the MODEL decide which one to call.
-  // After each call, the same category is offered again so the model can
-  // chain calls or write a text answer (it will, once it has what it needs).
+  /// All available tools: web_fetch + MCP tools.
+  List<Map<String, dynamic>> get _allTools => [
+        webFetchToolDef,
+        ...(_mcp?.tools ?? []),
+      ];
 
-  /// Returns a small fixed set of tools for the current message.
-  /// Always includes web_fetch. Never returns [].
-  List<CactusTool> _toolsForMessage(String userMessage) {
+  /// Keyword-based tool selection — narrows the set passed in the system prompt
+  /// to a relevant subset, keeping the prompt shorter.
+  ///
+  /// Always includes web_fetch.  Returns the full tool set when no keyword
+  /// matches (so the model can pick any tool).
+  List<Map<String, dynamic>> _toolsForMessage(String userMessage) {
     final m = userMessage.toLowerCase();
-    final byName = {for (final t in _allMcpTools) t.name: t};
+    final byName = {
+      for (final t in _allTools) t['name'] as String: t,
+    };
 
-    List<CactusTool> pick(List<String> names) =>
-        names.map((n) => byName[n]).whereType<CactusTool>().toList();
+    List<Map<String, dynamic>> pick(List<String> names) =>
+        names.map((n) => byName[n]).whereType<Map<String, dynamic>>().toList();
 
-    // Web only
     if (_kw(m, ['http://', 'https://', 'fetch url', 'open url'])) {
-      return [webFetchTool];
+      return [webFetchToolDef];
     }
-
-    // Contacts
     if (_kw(m, ['contact', 'phone', 'контакт', 'телефон', 'адресн'])) {
-      return [webFetchTool, ...pick([
-        'nc_contacts_list_contacts', 'nc_contacts_get_contact', 'nc_contacts_create_contact',
+      return [webFetchToolDef, ...pick([
+        'nc_contacts_list_contacts',
+        'nc_contacts_get_contact',
+        'nc_contacts_create_contact',
       ])];
     }
-
-    // Notes
     if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
-      return [webFetchTool, ...pick([
-        'nc_notes_list_notes', 'nc_notes_create_note', 'nc_notes_get_note',
+      return [webFetchToolDef, ...pick([
+        'nc_notes_list_notes',
+        'nc_notes_create_note',
+        'nc_notes_get_note',
       ])];
     }
-
-    // Files
     if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
-      return [webFetchTool, ...pick([
-        'nc_files_list_files', 'nc_files_upload_file', 'nc_files_get_file_info',
+      return [webFetchToolDef, ...pick([
+        'nc_files_list_files',
+        'nc_files_upload_file',
+        'nc_files_get_file_info',
       ])];
     }
-
-    // Deck
     if (_kw(m, ['deck', 'board', 'kanban', 'card', 'борд', 'канбан'])) {
-      return [webFetchTool, ...pick([
-        'nc_deck_list_boards', 'nc_deck_create_card', 'nc_deck_list_cards',
+      return [webFetchToolDef, ...pick([
+        'nc_deck_list_boards',
+        'nc_deck_create_card',
+        'nc_deck_list_cards',
       ])];
     }
 
-    // Default: calendar + tasks (most common)
-    return [webFetchTool, ...pick([
+    // Default: calendar + tasks (most common).
+    return [webFetchToolDef, ...pick([
       'nc_calendar_list_calendars',
       'nc_calendar_get_upcoming_events',
       'nc_calendar_create_event',
@@ -164,7 +113,26 @@ class ChatProvider extends ChangeNotifier {
   static bool _kw(String msg, List<String> words) =>
       words.any((w) => msg.contains(w));
 
-  final List<ChatMessage> _history = [];
+  // ── System prompt ─────────────────────────────────────────────────────────
+
+  String _buildSystemPrompt(List<Map<String, dynamic>> tools) {
+    if (tools.isEmpty) {
+      return 'You are a helpful AI assistant. Answer the user concisely.';
+    }
+
+    final toolsJson = const JsonEncoder.withIndent('  ').convert(tools);
+
+    return '''You are a helpful AI assistant with access to tools.
+
+To call a tool, respond with a JSON object on a single line:
+{"tool": "tool_name", "arguments": {"param": "value"}}
+
+After receiving the tool result, provide your final answer to the user.
+If you don\'t need any tool, answer directly without JSON.
+
+Available tools:
+$toolsJson''';
+  }
 
   // ── Initialisation ────────────────────────────────────────────────────────
 
@@ -174,41 +142,19 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
 
       final prefs = await SharedPreferences.getInstance();
-      _activeModelSlug = prefs.getString(_kActiveSlugKey) ?? _kDefaultSlug;
+      _activeModelPath = prefs.getString(_kModelPathKey) ?? '';
 
-      _history
-        ..clear();
-      // Do NOT add a system message — LFM2 chat template puts the tool list
-      // in the system slot via <|tool_list_start|>; our text would break it.
-
-      // Disable Cactus built-in tool filtering — we do our own intent-based
-      // filtering (_toolsFor) that already limits to ≤5 tools per request.
-      _lm = CactusLM(enableToolFiltering: false);
-
-      // Check if model is already available — do NOT auto-download.
-      final cached = await _isModelCached(_activeModelSlug);
-      if (!cached) {
+      if (_activeModelPath.isEmpty ||
+          !File(_activeModelPath).existsSync()) {
         statusText = 'Выберите модель в Настройках';
         notifyListeners();
-        // MCP can still connect independently of the model.
         await _connectMcp();
         return;
       }
 
-
-      statusText = 'Инициализация модели…';
-      notifyListeners();
-
-      debugPrint('Initializing context with model: $_activeModelSlug');
-      await _lm!.initializeModel(
-        params: CactusInitParams(model: _activeModelSlug, contextSize: 4096),
-      );
-
-      isModelReady = true;
-      statusText = 'Модель готова';
-      notifyListeners();
-
+      await _loadEngine(_activeModelPath);
       await _connectMcp();
+      _rebuildChat();
     } catch (e) {
       errorText = 'Ошибка инициализации: $e';
       statusText = 'Ошибка';
@@ -216,111 +162,70 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  /// Returns the set of model slugs that are already downloaded to internal storage.
-  /// Imported local files are stored under their matching CDN slug directory,
-  /// so they appear here the same way as CDN downloads.
-  Future<Set<String>> downloadedModelSlugs() async {
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final result = <String>{};
-    for (final m in kAvailableCactusModels) {
-      final dir = Directory('${appDocDir.path}/models/${m.slug}');
-      if (await _dirHasFiles(dir)) result.add(m.slug);
-    }
-    return result;
-  }
-
-  /// Returns true if the model files are already present in internal storage.
-  Future<bool> _isModelCached(String slug) async {
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final internalDir = Directory('${appDocDir.path}/models/$slug');
-    return _dirHasFiles(internalDir);
-  }
-
-  // ── Download & load from Cactus CDN ──────────────────────────────────────
-
-  /// Downloads a model by [slug] from the Cactus CDN (if not already cached)
-  /// and initialises the LM.  Updates [statusText] / [errorText] throughout.
-  Future<void> downloadAndLoadModel(String slug) async {
-    isModelReady = false;
-    errorText = null;
+  /// Spawns LlamaEngine and marks model as ready.
+  /// Does NOT create the EngineChat — call [_rebuildChat] after MCP connects.
+  Future<void> _loadEngine(String path) async {
+    statusText = 'Загрузка модели…';
     notifyListeners();
 
-    try {
-      _activeModelSlug = slug;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kActiveSlugKey, slug);
+    await _chat?.dispose();
+    await _engine?.dispose();
+    _chat = null;
+    _engine = null;
 
-      // Disable Cactus built-in tool filtering — we do our own intent-based
-      // filtering (_toolsFor) that already limits to ≤5 tools per request.
-      _lm = CactusLM(enableToolFiltering: false);
+    _engine = await LlamaEngine.spawn(
+      libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
+      modelParams: ModelParams(path: path, gpuLayers: 99),
+      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
+    );
 
-      // Download only if not already in internal storage.
-      final appDocDir = await getApplicationDocumentsDirectory();
-      final internalDir = Directory('${appDocDir.path}/models/$slug');
-      if (!await _dirHasFiles(internalDir)) {
-        statusText = 'Загрузка модели…';
-        notifyListeners();
+    isModelReady = true;
+    _activeModelPath = path;
+    statusText = 'Модель готова';
+    notifyListeners();
+  }
 
-        await _lm!.downloadModel(
-          model: slug,
-          downloadProcessCallback: (progress, status, isError) {
-            if (isError) {
-              errorText = status;
-            } else {
-              final pct = progress != null
-                  ? ' ${(progress * 100).toStringAsFixed(0)}%'
-                  : '';
-              statusText = 'Загрузка$pct';
-            }
-            notifyListeners();
-          },
-        );
+  /// (Re)creates the EngineChat with a fresh system prompt that includes
+  /// the current MCP tool list.  Call after model load or MCP reconnect.
+  void _rebuildChat() {
+    if (_engine == null) return;
+
+    // Fire-and-forget; caller may notifyListeners after.
+    () async {
+      await _chat?.dispose();
+      _chat = await _engine!.createChat();
+      final tools = _allTools;
+      if (tools.isNotEmpty) {
+        _chat!.addSystem(_buildSystemPrompt(tools));
       }
-
-      statusText = 'Инициализация модели…';
-      notifyListeners();
-
-      await _lm!.initializeModel(
-        params: CactusInitParams(model: slug, contextSize: 4096),
-      );
-
-      isModelReady = true;
-      statusText = isMcpConnected
-          ? 'Готово (${_mcp!.tools.length} инструментов)'
-          : 'Модель загружена';
-    } catch (e) {
-      errorText = 'Ошибка загрузки: $e';
-      statusText = 'Ошибка';
-    }
-    notifyListeners();
+      debugPrint('[AI] Chat rebuilt. Tools: ${tools.map((t) => t['name']).toList()}');
+    }();
   }
 
   // ── Import from local file ────────────────────────────────────────────────
 
-  /// Maps a GGUF filename to the Cactus CDN slug it belongs to.
-  // ── Import from local file (NOT SUPPORTED with Cactus) ───────────────────
-
-  /// Cactus uses its own proprietary model format (config.txt + custom weight
-  /// files) — it does NOT support llama.cpp GGUF files at all.
-  ///
-  /// This method always shows an explanatory error so the user understands
-  /// why the feature doesn't work and what to do instead.
+  /// Loads a GGUF model from [filePath] and saves the path for next launch.
   Future<void> importModelFromFile(String filePath) async {
     isModelReady = false;
-    statusText = 'Ошибка';
-    errorText =
-        'Импорт GGUF-файлов не поддерживается.\n\n'
-        'Cactus SDK использует собственный формат моделей (config.txt + '
-        'файлы весов), несовместимый с llama.cpp GGUF.\n\n'
-        'Пожалуйста, скачайте модель из списка выше — '
-        'они хранятся на CDN Cactus в нужном формате.';
+    errorText = null;
+    statusText = 'Загрузка модели…';
     notifyListeners();
-    return;
-  }
 
-  Future<bool> _dirHasFiles(Directory dir) async {
-    if (!await dir.exists()) return false;
-    return await dir.list().any((_) => true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kModelPathKey, filePath);
+
+      await _loadEngine(filePath);
+      _rebuildChat();
+
+      statusText = isMcpConnected
+          ? 'Готово (${_mcp!.tools.length} инструментов)'
+          : 'Модель загружена';
+    } catch (e) {
+      errorText = 'Ошибка загрузки модели: $e';
+      statusText = 'Ошибка';
+    }
+    notifyListeners();
   }
 
   // ── MCP connection ────────────────────────────────────────────────────────
@@ -349,6 +254,9 @@ class ChatProvider extends ChangeNotifier {
         bearerToken: prefs.getString('mcp_token') ?? '',
       );
       await _mcp!.connect();
+
+      // Rebuild chat so the new tool list is included in the system prompt.
+      _rebuildChat();
 
       statusText = isModelReady
           ? 'Готово (${_mcp!.tools.length} инструментов)'
@@ -400,7 +308,6 @@ class ChatProvider extends ChangeNotifier {
       content: text.trim(),
       timestamp: DateTime.now(),
     ));
-    _history.add(ChatMessage(role: 'user', content: text.trim()));
 
     final assistantId = _uid();
     _addMessage(AppMessage(
@@ -428,30 +335,21 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> _runAgentLoop(String assistantId,
       {required String userMessage}) async {
-    final lm = _lm!;
-    const maxIterations = 8;
-    final completedTools = <String>[];
-    _stopRequested = false;
-
-    // Check whether the active model supports Cactus tool-calling format.
-    final activeModelInfo = kAvailableCactusModels
-        .where((m) => m.slug == _activeModelSlug)
-        .firstOrNull;
-    final modelSupportsTools = activeModelInfo?.supportsToolCalling ?? true;
-
-    // Warn early if MCP not connected (only relevant when tools are supported).
-    if (modelSupportsTools && _allMcpTools.isEmpty) {
-      debugPrint('[AI] WARNING: MCP tools empty — server not configured?');
-      _updateMessage(
-        assistantId,
-        '⚠️ MCP не подключён. Настройте сервер в Настройках.',
-        MessageStatus.error,
-      );
-      return;
+    // Ensure we have a chat (may be null if engine just loaded).
+    if (_chat == null) {
+      await _ensureChat();
     }
+    final chat = _chat!;
 
-    final tools = modelSupportsTools ? _toolsForMessage(userMessage) : <CactusTool>[];
-    debugPrint('[AI] msg="$userMessage" tools=${tools.map((t) => t.name).toList()}');
+    _stopRequested = false;
+    final completedTools = <String>[];
+    const maxIterations = 8;
+
+    final tools = _toolsForMessage(userMessage);
+    debugPrint('[AI] msg="$userMessage" tools=${tools.map((t) => t['name']).toList()}');
+
+    // Add the user message to the engine chat context.
+    chat.addUser(userMessage);
 
     for (int iter = 0; iter < maxIterations; iter++) {
       if (_stopRequested) {
@@ -464,100 +362,77 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
-      debugPrint('[AI] iter=$iter tools=${tools.map((t) => t.name).toList()}');
-
-      final streamResult = await lm.generateCompletionStream(
-        messages: List.from(_history),
-        params: CactusCompletionParams(
-          tools: tools,
-          // LFM2-1.2B-Tool authors recommend temperature=0 (greedy decoding)
-          // for reliable tool calling. For conversational replies without tools
-          // a small value is still fine, but 0 works well universally here.
-          temperature: 0,
-          maxTokens: 512,
-        ),
-      );
-
+      debugPrint('[AI] iter=$iter generating…');
       final buffer = StringBuffer();
-      // Cactus SDK may call controller.addError(CactusCompletionResult) on
-      // failure — catch it here so we can still await streamResult.result below.
-      try {
-        await for (final chunk in streamResult.stream) {
-          if (_stopRequested) break;
-          buffer.write(chunk);
-          _updateMessage(
-            assistantId,
-            _buildDisplay(completedTools, _stripToolMarkup(buffer.toString()),
-                pending: true),
-            MessageStatus.sending,
-          );
+
+      await for (final event in chat.generate(
+        sampler: const SamplerParams(temperature: 0.0, topP: 1.0),
+        maxTokens: 512,
+      )) {
+        if (_stopRequested) break;
+        switch (event) {
+          case TokenEvent():
+            buffer.write(event.text);
+            _updateMessage(
+              assistantId,
+              _buildDisplay(completedTools, _cleanOutput(buffer.toString()),
+                  pending: true),
+              MessageStatus.sending,
+            );
+          case DoneEvent():
+            if (event.trailingText.isNotEmpty) {
+              buffer.write(event.trailingText);
+            }
+            debugPrint('[AI] done reason=${event.reason} tokens=${event.generatedCount}');
+          case ShiftEvent():
+            debugPrint('[AI] context shift');
         }
-      } catch (_) {
-        // Stream error: result Future will have success=false with the message.
       }
 
       if (_stopRequested) {
         _stopRequested = false;
-        final partial = buffer.toString();
-        if (partial.isNotEmpty) {
-          _history.add(ChatMessage(role: 'assistant', content: partial));
-        }
         _updateMessage(
           assistantId,
-          _buildDisplay(
-              completedTools,
-              '${_stripToolMarkup(partial)}\n⏹ остановлено'.trim(),
+          _buildDisplay(completedTools,
+              '${_cleanOutput(buffer.toString())}\n⏹ остановлено'.trim(),
               pending: false),
           MessageStatus.done,
         );
         return;
       }
 
-      final iterResult = await streamResult.result;
+      final rawText = buffer.toString();
+      final call = _parseToolCall(rawText);
 
-      // Surface native-side errors in a human-readable form.
-      if (!iterResult.success) {
-        final msg = iterResult.response?.isNotEmpty == true
-            ? iterResult.response!
-            : 'Неизвестная ошибка генерации';
+      if (call == null) {
+        // No tool call — this is the final answer.
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, '⚠️ $msg', pending: false),
-          MessageStatus.error,
-        );
-        return;
-      }
-
-      debugPrint('[AI] iter=$iter success=${iterResult.success} toolCalls=${iterResult.toolCalls.map((c) => "${c.name}(${c.arguments})").toList()} response="${iterResult.response?.substring(0, iterResult.response!.length.clamp(0, 120))}"');
-
-      if (iterResult.toolCalls.isEmpty) {
-        final text = buffer.toString();
-        _history.add(ChatMessage(role: 'assistant', content: text));
-        _updateMessage(
-          assistantId,
-          _buildDisplay(completedTools, _stripToolMarkup(text), pending: false),
+          _buildDisplay(completedTools, _cleanOutput(rawText), pending: false),
           MessageStatus.done,
         );
         return;
       }
 
-      if (buffer.isNotEmpty) {
-        _history.add(ChatMessage(role: 'assistant', content: buffer.toString()));
-      }
+      // ── Execute tool ─────────────────────────────────────────────────────
+      final (toolName, toolArgs) = call;
+      debugPrint('[AI] tool call: $toolName($toolArgs)');
 
-      for (final call in iterResult.toolCalls) {
-        if (_stopRequested) break;
-        completedTools.add('🔧 ${call.name}…');
-        _updateMessage(
-          assistantId,
-          _buildDisplay(completedTools, '', pending: true),
-          MessageStatus.sending,
-        );
-        final toolResult = await _executeTool(call);
-        debugPrint('[AI] tool ${call.name} result="${toolResult.substring(0, toolResult.length.clamp(0, 200))}"');
-        completedTools[completedTools.length - 1] = '🔧 ${call.name} ✓';
-        _history.add(ChatMessage(role: 'tool', content: toolResult));
-      }
+      completedTools.add('🔧 $toolName…');
+      _updateMessage(
+        assistantId,
+        _buildDisplay(completedTools, '', pending: true),
+        MessageStatus.sending,
+      );
+
+      final toolResult = await _executeTool(toolName, toolArgs);
+      debugPrint(
+          '[AI] tool result: ${toolResult.substring(0, toolResult.length.clamp(0, 200))}');
+
+      completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
+
+      // Feed the result back as a user message so the model can continue.
+      chat.addUser('<tool_result name="$toolName">\n$toolResult\n</tool_result>');
     }
 
     _updateMessage(
@@ -566,6 +441,107 @@ class ChatProvider extends ChangeNotifier {
       MessageStatus.done,
     );
   }
+
+  /// Waits up to 3 seconds for the async _rebuildChat to complete.
+  Future<void> _ensureChat() async {
+    for (int i = 0; i < 30 && _chat == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (_chat == null && _engine != null) {
+      // Fallback: create chat synchronously if _rebuildChat never fired.
+      _chat = await _engine!.createChat();
+      final tools = _allTools;
+      if (tools.isNotEmpty) {
+        _chat!.addSystem(_buildSystemPrompt(tools));
+      }
+    }
+  }
+
+  // ── Tool-call parser ──────────────────────────────────────────────────────
+
+  /// Parses a tool call from [text], returning `(toolName, args)` or null.
+  ///
+  /// Supported formats:
+  ///   1. JSON line: {"tool":"name","arguments":{...}}
+  ///   2. Wrapped:   <tool_call>{"name":"name","arguments":{...}}</tool_call>
+  ///   3. LFM2:      <|tool_call_start|>[func(arg="val")]<|tool_call_end|>
+  (String, Map<String, dynamic>)? _parseToolCall(String text) {
+    // Format 1 & 2: JSON-based (Qwen3, generic)
+    final jsonMatch = RegExp(
+            r'\{[^{}]*"tool"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^}]*\})',
+            dotAll: true)
+        .firstMatch(text);
+    if (jsonMatch != null) {
+      try {
+        final name = jsonMatch.group(1)!;
+        final argsJson = jsonMatch.group(2)!;
+        final args =
+            jsonDecode(argsJson) as Map<String, dynamic>;
+        return (name, args);
+      } catch (_) {}
+    }
+
+    // Format: {"name": "...", "arguments": {...}}
+    final nameArgMatch = RegExp(
+            r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^}]*\})',
+            dotAll: true)
+        .firstMatch(text);
+    if (nameArgMatch != null) {
+      try {
+        final name = nameArgMatch.group(1)!;
+        final argsJson = nameArgMatch.group(2)!;
+        final args = jsonDecode(argsJson) as Map<String, dynamic>;
+        return (name, args);
+      } catch (_) {}
+    }
+
+    // Format 3: LFM2 <|tool_call_start|>[func(arg="val")]<|tool_call_end|>
+    final lfm2Match = RegExp(
+            r'<\|tool_call_start\|>\s*\[(\w+)\(([^)]*)\)\]\s*<\|tool_call_end\|>',
+            dotAll: true)
+        .firstMatch(text);
+    if (lfm2Match != null) {
+      final name = lfm2Match.group(1)!;
+      final argsStr = lfm2Match.group(2)!;
+      final args = _parsePythonKwargs(argsStr);
+      return (name, args);
+    }
+
+    return null;
+  }
+
+  /// Parses Python-style kwargs: key="val", key=123, key=True
+  static Map<String, dynamic> _parsePythonKwargs(String s) {
+    final result = <String, dynamic>{};
+    final re = RegExp(r'(\w+)\s*=\s*(?:"([^"]*)"|([\d.]+)|(true|false))');
+    for (final m in re.allMatches(s)) {
+      final key = m.group(1)!;
+      if (m.group(2) != null) {
+        result[key] = m.group(2)!;
+      } else if (m.group(3) != null) {
+        result[key] = num.tryParse(m.group(3)!) ?? m.group(3)!;
+      } else if (m.group(4) != null) {
+        result[key] = m.group(4) == 'true';
+      }
+    }
+    return result;
+  }
+
+  // ── Tool executor ─────────────────────────────────────────────────────────
+
+  Future<String> _executeTool(
+      String name, Map<String, dynamic> args) async {
+    if (name == 'web_fetch') {
+      return executeWebFetch(args);
+    }
+    final mcp = _mcp;
+    if (mcp == null || !mcp.isConnected) {
+      return 'MCP недоступен. Проверь настройки сервера.';
+    }
+    return mcp.executeTool(name, args);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   static String _buildDisplay(List<String> tools, String text,
       {required bool pending}) {
@@ -576,34 +552,24 @@ class ChatProvider extends ChangeNotifier {
     return parts.join('\n\n');
   }
 
-  // ── Tool executor ─────────────────────────────────────────────────────────
-
-  Future<String> _executeTool(ToolCall call) async {
-    if (call.name == 'web_fetch') {
-      return executeWebFetch(call.arguments);
-    }
-    final mcp = _mcp;
-    if (mcp == null || !mcp.isConnected) {
-      return 'MCP недоступен. Проверь настройки сервера.';
-    }
-    return mcp.executeTool(
-      call.name,
-      Map<String, dynamic>.from(call.arguments),
-    );
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  static String _stripToolMarkup(String text) {
-    var result = text.replaceAll(
-      RegExp(r'<\|tool_call_start\|>.*?<\|tool_call_end\|>', dotAll: true),
-      '',
-    );
-    result = result.replaceAll(
-        RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '');
-    result = result.replaceAll(
-        RegExp(r'<\|im_end\|>|<\|im_start\|>|<\|tool_call_end\|>'), '');
-    return result.trim();
+  /// Strips model-specific special tokens that leak into the visible output.
+  static String _cleanOutput(String text) {
+    return text
+        .replaceAll(
+            RegExp(r'<\|tool_call_start\|>.*?<\|tool_call_end\|>',
+                dotAll: true),
+            '')
+        .replaceAll(
+            RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '')
+        .replaceAll(
+            RegExp(r'<tool_call>.*?</tool_call>', dotAll: true), '')
+        .replaceAll(
+            RegExp(r'\{[^{}]*"tool"\s*:\s*"[^"]*"[^{}]*"arguments"[^{}]*\}',
+                dotAll: true),
+            '')
+        .replaceAll(
+            RegExp(r'<\|im_end\|>|<\|im_start\|>|<\|tool_call_end\|>'), '')
+        .trim();
   }
 
   void _addMessage(AppMessage msg) {
@@ -623,8 +589,8 @@ class ChatProvider extends ChangeNotifier {
   @override
   void dispose() {
     _mcp?.disconnect();
-    _lm?.unload();
-    _lm = null;
+    _chat?.dispose();
+    _engine?.dispose();
     super.dispose();
   }
 }

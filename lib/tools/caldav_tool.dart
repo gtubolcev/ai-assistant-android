@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:cactus/cactus.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 
@@ -25,75 +24,67 @@ class CalDavConfig {
       };
 }
 
-// ── Tool definitions (Cactus format) ─────────────────────────────────────────
+// ── Tool definitions (JSON-schema maps for llama_cpp_dart) ───────────────────
 
-final CactusTool listEventsTool = CactusTool(
-  name: 'caldav_list_events',
-  description: 'List calendar events and tasks (VTODO) from the CalDAV server '
+const Map<String, dynamic> listEventsTool = {
+  'name': 'caldav_list_events',
+  'description': 'List calendar events and tasks (VTODO) from the CalDAV server '
       'for a given date range.',
-  parameters: ToolParametersSchema(
-    properties: {
-      'start': ToolParameter(
-        type: 'string',
-        description: 'Start date in ISO 8601 format, e.g. 2026-05-24',
-        required: true,
-      ),
-      'end': ToolParameter(
-        type: 'string',
-        description: 'End date in ISO 8601 format, e.g. 2026-05-31',
-        required: true,
-      ),
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'start': {
+        'type': 'string',
+        'description': 'Start date in ISO 8601 format, e.g. 2026-05-24',
+      },
+      'end': {
+        'type': 'string',
+        'description': 'End date in ISO 8601 format, e.g. 2026-05-31',
+      },
     },
-  ),
-);
+    'required': ['start', 'end'],
+  },
+};
 
-final CactusTool createEventTool = CactusTool(
-  name: 'caldav_create_event',
-  description: 'Create a new calendar event or task (VTODO) on the CalDAV server.',
-  parameters: ToolParametersSchema(
-    properties: {
-      'title': ToolParameter(
-        type: 'string',
-        description: 'Event title',
-        required: true,
-      ),
-      'start': ToolParameter(
-        type: 'string',
-        description: 'Start datetime in ISO 8601, e.g. 2026-05-25T14:00:00',
-        required: true,
-      ),
-      'end': ToolParameter(
-        type: 'string',
-        description: 'End datetime in ISO 8601, e.g. 2026-05-25T15:00:00',
-        required: true,
-      ),
-      'description': ToolParameter(
-        type: 'string',
-        description: 'Optional event description',
-        required: false,
-      ),
-      'is_task': ToolParameter(
-        type: 'string',
-        description: 'Pass "true" to create a VTODO task instead of VEVENT',
-        required: false,
-      ),
+const Map<String, dynamic> createEventTool = {
+  'name': 'caldav_create_event',
+  'description': 'Create a new calendar event or task (VTODO) on the CalDAV server.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'title': {'type': 'string', 'description': 'Event title'},
+      'start': {
+        'type': 'string',
+        'description': 'Start datetime in ISO 8601, e.g. 2026-05-25T14:00:00',
+      },
+      'end': {
+        'type': 'string',
+        'description': 'End datetime in ISO 8601, e.g. 2026-05-25T15:00:00',
+      },
+      'description': {
+        'type': 'string',
+        'description': 'Optional event description',
+      },
+      'is_task': {
+        'type': 'string',
+        'description': 'Pass "true" to create a VTODO task instead of VEVENT',
+      },
     },
-  ),
-);
+    'required': ['title', 'start', 'end'],
+  },
+};
 
-final CactusTool deleteEventTool = CactusTool(
-  name: 'caldav_delete_event',
-  description: 'Delete a calendar event or task by its UID.',
-  parameters: ToolParametersSchema(
-    properties: {
-      'uid': ToolParameter(
-        type: 'string',
-        description: 'The UID of the event to delete',
-        required: true,
-      ),
+const Map<String, dynamic> deleteEventTool = {
+  'name': 'caldav_delete_event',
+  'description': 'Delete a calendar event or task by its UID.',
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'uid': {'type': 'string', 'description': 'The UID of the event to delete'},
     },
-  ),
-);
+    'required': ['uid'],
+  },
+};
 
 // ── Executor ──────────────────────────────────────────────────────────────────
 
@@ -101,11 +92,12 @@ class CalDavExecutor {
   final CalDavConfig config;
   CalDavExecutor(this.config);
 
-  Future<String> execute(String toolName, Map<String, String> args) {
+  Future<String> execute(String toolName, Map<String, dynamic> args) {
+    final strArgs = args.map((k, v) => MapEntry(k, v.toString()));
     return switch (toolName) {
-      'caldav_list_events' => _listEvents(args),
-      'caldav_create_event' => _createEvent(args),
-      'caldav_delete_event' => _deleteEvent(args),
+      'caldav_list_events' => _listEvents(strArgs),
+      'caldav_create_event' => _createEvent(strArgs),
+      'caldav_delete_event' => _deleteEvent(strArgs),
       _ => Future.value('Unknown CalDAV tool: $toolName'),
     };
   }

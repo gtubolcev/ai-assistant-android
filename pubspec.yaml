@@ -10,8 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # On-device LLM inference (Cactus SDK — includes CactusTool, ChatMessage, etc.)
-  cactus: ^1.3.0
+  # On-device LLM inference (llama_cpp_dart — GGUF via llama.cpp, prebuilt AAR)
+  llama_cpp_dart: ^0.9.0-dev.6
 
   # State management
   provider: ^6.1.2

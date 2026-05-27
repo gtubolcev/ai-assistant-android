@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:cactus/cactus.dart';
 import 'package:mcp_dart/mcp_dart.dart';
 
 /// Connects to a remote MCP server via StreamableHTTP,
@@ -12,6 +11,8 @@ import 'package:mcp_dart/mcp_dart.dart';
 ///
 /// Pass [username] + [password] for Basic Auth, or [bearerToken] for Bearer.
 /// Leave all empty for unauthenticated servers.
+///
+/// Tools are returned as JSON-schema maps compatible with llama_cpp_dart.
 class McpBridge {
   final String serverUrl;
   final String bearerToken;
@@ -19,7 +20,7 @@ class McpBridge {
   final String password;
 
   McpClient? _client;
-  final List<CactusTool> _tools = [];
+  final List<Map<String, dynamic>> _tools = [];
 
   McpBridge({
     required this.serverUrl,
@@ -28,7 +29,8 @@ class McpBridge {
     this.password = '',
   });
 
-  List<CactusTool> get tools => List.unmodifiable(_tools);
+  /// Tool definitions as JSON-schema maps (name / description / parameters).
+  List<Map<String, dynamic>> get tools => List.unmodifiable(_tools);
   bool get isConnected => _client != null;
 
   // ── Connect ────────────────────────────────────────────────────────────────
@@ -56,7 +58,6 @@ class McpBridge {
 
   /// Returns the Authorization header value, or null if no auth configured.
   String? _buildAuthHeader() {
-    // Basic Auth takes priority when username is set.
     if (username.isNotEmpty) {
       final creds = base64Encode(utf8.encode('$username:$password'));
       return 'Basic $creds';
@@ -77,31 +78,12 @@ class McpBridge {
     }
   }
 
-  CactusTool _convertTool(Tool tool) {
-    // tool.inputSchema is a sealed JsonSchema — use toJson() to get a plain map.
-    final schema = tool.inputSchema.toJson();
-    final props = schema['properties'] as Map<String, dynamic>? ?? {};
-    final requiredList = (schema['required'] as List<dynamic>? ?? [])
-        .map((e) => e.toString())
-        .toSet();
-
-    return CactusTool(
-      name: tool.name,
-      description: tool.description ?? '',
-      parameters: ToolParametersSchema(
-        properties: props.map((key, value) {
-          final prop = value as Map<String, dynamic>? ?? {};
-          return MapEntry(
-            key,
-            ToolParameter(
-              type: prop['type'] as String? ?? 'string',
-              description: prop['description'] as String? ?? '',
-              required: requiredList.contains(key),
-            ),
-          );
-        }),
-      ),
-    );
+  Map<String, dynamic> _convertTool(Tool tool) {
+    return {
+      'name': tool.name,
+      'description': tool.description ?? '',
+      'parameters': tool.inputSchema.toJson(),
+    };
   }
 
   // ── Execute tool call ─────────────────────────────────────────────────────

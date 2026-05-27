@@ -1,26 +1,26 @@
-import 'package:cactus/cactus.dart';
 import 'package:http/http.dart' as http;
 
-/// Tool definition for the web_fetch tool (Cactus format).
-final CactusTool webFetchTool = CactusTool(
-  name: 'web_fetch',
-  description:
+/// Tool definition for web_fetch (JSON-schema map for llama_cpp_dart prompts).
+const Map<String, dynamic> webFetchToolDef = {
+  'name': 'web_fetch',
+  'description':
       'Fetch the text content of a web page. Use for reading articles, '
       'documentation, or any URL the user mentions.',
-  parameters: ToolParametersSchema(
-    properties: {
-      'url': ToolParameter(
-        type: 'string',
-        description: 'The full URL to fetch (must start with http/https)',
-        required: true,
-      ),
+  'parameters': {
+    'type': 'object',
+    'properties': {
+      'url': {
+        'type': 'string',
+        'description': 'The full URL to fetch (must start with http/https)',
+      }
     },
-  ),
-);
+    'required': ['url'],
+  },
+};
 
 /// Executes the web_fetch tool.
-Future<String> executeWebFetch(Map<String, String> args) async {
-  final url = args['url'];
+Future<String> executeWebFetch(Map<String, dynamic> args) async {
+  final url = args['url']?.toString();
   if (url == null || url.isEmpty) return 'Error: url is required';
 
   try {
@@ -44,7 +44,7 @@ Future<String> executeWebFetch(Map<String, String> args) async {
         .replaceAll(RegExp(r'\s{2,}'), ' ')
         .trim();
 
-    // Truncate to ~4000 chars so we don't overflow the 4096-token context.
+    // Truncate to ~4000 chars to avoid overflowing context.
     return text.length > 4000 ? '${text.substring(0, 4000)}…' : text;
   } catch (e) {
     return 'Error fetching $url: $e';
