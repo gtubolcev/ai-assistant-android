@@ -786,7 +786,105 @@ $toolLines''';
     if (mcp == null || !mcp.isConnected) {
       return 'MCP недоступен. Проверь настройки сервера.';
     }
-    return mcp.executeTool(name, args);
+    final raw = await mcp.executeTool(name, args);
+    return _humanizeToolResult(name, raw);
+  }
+
+  /// Converts raw MCP tool results to compact human-readable text.
+  ///
+  /// Small models like LFM2-1.2B cannot summarize large JSON — they echo it
+  /// verbatim. This method pre-formats the data so the model only needs to
+  /// repeat a short, structured description.
+  static String _humanizeToolResult(String toolName, String raw) {
+    // Don't touch explicit errors.
+    if (raw.startsWith('Error') || raw.startsWith('Ошибка') ||
+        raw.startsWith('MCP')) {
+      return raw;
+    }
+
+    try {
+      final json = jsonDecode(raw);
+
+      // ── Calendar list ──────────────────────────────────────────────────────
+      if (toolName == 'nc_calendar_list_calendars') {
+        final cals = (json['calendars'] as List?) ?? [];
+        if (cals.isEmpty) return 'No calendars found.';
+        final lines = cals.map((c) {
+          final name = c['display_name'] ?? c['name'] ?? '?';
+          final id = (c['href'] as String? ?? '').split('/').where((s) => s.isNotEmpty).last;
+          return '• $name (id: $id)';
+        }).join('\n');
+        return 'Found ${cals.length} calendar(s):\n$lines';
+      }
+
+      // ── Upcoming events ────────────────────────────────────────────────────
+      if (toolName == 'nc_calendar_get_upcoming_events' ||
+          toolName == 'nc_calendar_list_events') {
+        final events = (json['events'] as List?) ?? [];
+        if (events.isEmpty) return 'No upcoming events found.';
+        final lines = events.take(10).map((e) {
+          final title = e['summary'] ?? e['title'] ?? '(no title)';
+          final start = e['start'] ?? e['dtstart'] ?? '';
+          return '• $title — $start';
+        }).join('\n');
+        return 'Found ${events.length} event(s):\n$lines';
+      }
+
+      // ── Todo / task list ───────────────────────────────────────────────────
+      if (toolName == 'nc_calendar_list_todos') {
+        final todos = (json['todos'] as List?) ??
+            (json['tasks'] as List?) ?? [];
+        if (todos.isEmpty) return 'No tasks found.';
+        final lines = todos.take(15).map((t) {
+          final title = t['summary'] ?? t['title'] ?? '(no title)';
+          final status = t['status'] ?? '';
+          final due = t['due'] ?? '';
+          return '• $title${due.isNotEmpty ? " (due: $due)" : ""}${status.isNotEmpty ? " [$status]" : ""}';
+        }).join('\n');
+        return 'Found ${todos.length} task(s):\n$lines';
+      }
+
+      // ── Contacts list ──────────────────────────────────────────────────────
+      if (toolName == 'nc_contacts_list_contacts') {
+        final contacts = (json['contacts'] as List?) ?? [];
+        if (contacts.isEmpty) return 'No contacts found.';
+        final lines = contacts.take(15).map((c) {
+          final name = c['display_name'] ?? c['fn'] ?? '?';
+          final phone = (c['phones'] as List?)?.first?['value'] ?? '';
+          return '• $name${phone.isNotEmpty ? " — $phone" : ""}';
+        }).join('\n');
+        return 'Found ${contacts.length} contact(s):\n$lines';
+      }
+
+      // ── Notes list ─────────────────────────────────────────────────────────
+      if (toolName == 'nc_notes_list_notes') {
+        final notes = (json['notes'] as List?) ?? [];
+        if (notes.isEmpty) return 'No notes found.';
+        final lines = notes.take(10).map((n) {
+          final title = n['title'] ?? n['name'] ?? '(untitled)';
+          return '• $title';
+        }).join('\n');
+        return 'Found ${notes.length} note(s):\n$lines';
+      }
+
+      // ── Generic: if result is short enough, pass as-is; otherwise summarize top fields ──
+      if (raw.length <= 400) return raw;
+
+      // For large unknown responses: extract top-level non-nested fields only.
+      if (json is Map) {
+        final summary = json.entries
+            .where((e) => e.value is! Map && e.value is! List)
+            .take(8)
+            .map((e) => '${e.key}: ${e.value}')
+            .join('\n');
+        return summary.isNotEmpty ? summary : raw.substring(0, 400);
+      }
+    } catch (_) {
+      // Not JSON — pass through, truncated.
+    }
+
+    // Fallback: truncate to 400 chars.
+    return raw.length > 400 ? '${raw.substring(0, 400)}\n[...]' : raw;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
