@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -255,16 +256,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Looks for ai_assistant_backup.json in common Downloads locations.
+  static File? _findBackupInDownloads() {
+    const candidates = [
+      '/storage/emulated/0/Download/ai_assistant_backup.json',
+      '/storage/emulated/0/Downloads/ai_assistant_backup.json',
+    ];
+    for (final path in candidates) {
+      final f = File(path);
+      if (f.existsSync()) return f;
+    }
+    return null;
+  }
+
   Future<void> _importSettings() async {
     setState(() => _importing = true);
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-        withData: true,
-      );
+      Uint8List? bytes;
 
-      final bytes = result?.files.single.bytes;
+      // ── Auto-detect backup in Downloads ─────────────────────────────────────
+      final found = _findBackupInDownloads();
+      if (found != null && mounted) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Найден бэкап'),
+            content: Text('Восстановить настройки из\n${found.path}?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Выбрать файл'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Восстановить'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed == true) {
+          bytes = found.readAsBytesSync();
+        }
+        // confirmed == false → fall through to file picker
+        // confirmed == null (dismissed) → cancel
+        if (confirmed == null) {
+          setState(() => _importing = false);
+          return;
+        }
+      }
+
+      // ── Manual file picker (if no auto-found file or user chose manually) ───
+      if (bytes == null) {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['json'],
+          withData: true,
+        );
+        bytes = result?.files.single.bytes;
+      }
+
       if (bytes == null || !mounted) {
         setState(() => _importing = false);
         return;
