@@ -210,7 +210,7 @@ $toolLines''';
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
       modelParams: ModelParams(path: path, gpuLayers: 0),  // CPU-only: safer on MediaTek
-      contextParams: const ContextParams(nCtx: 2048, nBatch: 256, nUbatch: 256),
+      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
     );
 
     isModelReady = true;
@@ -483,7 +483,7 @@ $toolLines''';
       final stream = chat
           .generate(
             sampler: const SamplerParams(temperature: 0.6, topP: 0.95),
-            maxTokens: 256,
+            maxTokens: 512,
           )
           .timeout(
             const Duration(seconds: 120),
