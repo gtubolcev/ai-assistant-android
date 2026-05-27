@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -291,14 +293,89 @@ class _ListeningBannerState extends State<_ListeningBanner>
 
 // ── Message bubble ─────────────────────────────────────────────────────────────
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   final AppMessage message;
   const _MessageBubble(this.message);
 
   @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  Timer? _timer;
+  // Set when generation finishes; shown for a few seconds then cleared.
+  String? _finalElapsed;
+
+  bool get _isSending =>
+      widget.message.status == MessageStatus.sending &&
+      !widget.message.isUser;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isSending) _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(_MessageBubble old) {
+    super.didUpdateWidget(old);
+    final wasSending =
+        old.message.status == MessageStatus.sending && !old.message.isUser;
+    final nowDone = widget.message.status == MessageStatus.done;
+
+    if (wasSending && nowDone) {
+      final ms = DateTime.now()
+          .difference(widget.message.timestamp)
+          .inMilliseconds;
+      _finalElapsed = _fmtMs(ms);
+      _stopTimer();
+      // Keep final time visible for 12 seconds then fade away.
+      Future.delayed(const Duration(seconds: 12), () {
+        if (mounted) setState(() => _finalElapsed = null);
+      });
+    }
+
+    if (_isSending && _timer == null) _startTimer();
+    if (!_isSending && _timer != null) _stopTimer();
+  }
+
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _stopTimer() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  @override
+  void dispose() {
+    _stopTimer();
+    super.dispose();
+  }
+
+  String _fmtMs(int ms) =>
+      ms < 1000 ? '${ms} мс' : '${(ms / 1000).toStringAsFixed(1)} с';
+
+  String? get _elapsedLabel {
+    if (_isSending) {
+      final ms = DateTime.now()
+          .difference(widget.message.timestamp)
+          .inMilliseconds;
+      return '⏱ ${_fmtMs(ms)}';
+    }
+    if (_finalElapsed != null) return '⏱ $_finalElapsed';
+    return null;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final message = widget.message;
     final isUser = message.isUser;
+    final elapsed = _elapsedLabel;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -340,22 +417,38 @@ class _MessageBubble extends StatelessWidget {
                     bottomRight: Radius.circular(isUser ? 4 : 18),
                   ),
                 ),
-                child: message.status == MessageStatus.sending &&
-                        message.content.isEmpty
-                    ? _TypingIndicator(color: scheme.onSurface)
-                    : isUser
-                        ? Text(
-                            message.content,
-                            style:
-                                TextStyle(color: scheme.onPrimaryContainer),
-                          )
-                        : MarkdownBody(
-                            data: message.content.isEmpty
-                                ? '…'
-                                : message.content,
-                            styleSheet: MarkdownStyleSheet.fromTheme(
-                                Theme.of(context)),
-                          ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Main content
+                    if (message.status == MessageStatus.sending &&
+                        message.content.isEmpty)
+                      _TypingIndicator(color: scheme.onSurface)
+                    else if (isUser)
+                      Text(
+                        message.content,
+                        style: TextStyle(color: scheme.onPrimaryContainer),
+                      )
+                    else
+                      MarkdownBody(
+                        data: message.content.isEmpty ? '…' : message.content,
+                        styleSheet:
+                            MarkdownStyleSheet.fromTheme(Theme.of(context)),
+                      ),
+                    // Elapsed time footer (assistant only)
+                    if (!isUser && elapsed != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        elapsed,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurfaceVariant.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),
