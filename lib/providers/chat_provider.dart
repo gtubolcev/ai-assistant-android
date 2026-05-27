@@ -122,13 +122,15 @@ class ChatProvider extends ChangeNotifier {
 
     final toolsJson = const JsonEncoder.withIndent('  ').convert(tools);
 
-    return '''You are a helpful AI assistant with access to tools.
+    return '''You are a helpful AI assistant with access to tools. /no_think
 
-To call a tool, respond with a JSON object on a single line:
+Answer concisely. Do NOT use <think> tags or internal reasoning.
+
+To call a tool, output ONLY a JSON object:
 {"tool": "tool_name", "arguments": {"param": "value"}}
 
-After receiving the tool result, provide your final answer to the user.
-If you don\'t need any tool, answer directly without JSON.
+After receiving the tool result, give your final answer.
+If no tool is needed, answer directly — no JSON.
 
 Available tools:
 $toolsJson''';
@@ -440,15 +442,36 @@ $toolsJson''';
 
       debugPrint('[AI] iter=$iter generating…');
       final buffer = StringBuffer();
+      int tokenCount = 0;
 
-      await for (final event in chat.generate(
-        sampler: const SamplerParams(temperature: 0.0, topP: 1.0),
-        maxTokens: 512,
-      )) {
+      // Wrap stream with a per-event timeout so a stuck model doesn't hang forever.
+      final stream = chat
+          .generate(
+            sampler: const SamplerParams(temperature: 0.6, topP: 0.95),
+            maxTokens: 256,
+          )
+          .timeout(
+            const Duration(seconds: 45),
+            onTimeout: (sink) {
+              debugPrint('[AI] ⚠️ generation timeout after 45s — closing stream');
+              sink.close();
+            },
+          );
+
+      await for (final event in stream) {
         if (_stopRequested) break;
         switch (event) {
           case TokenEvent():
             buffer.write(event.text);
+            tokenCount++;
+            // Log every 20 tokens so logcat shows the model IS working.
+            if (tokenCount % 20 == 0) {
+              final snippet = buffer.toString();
+              final tail = snippet.length > 40
+                  ? '…${snippet.substring(snippet.length - 40)}'
+                  : snippet;
+              debugPrint('[AI] tok=$tokenCount tail="$tail"');
+            }
             _updateMessage(
               assistantId,
               _buildDisplay(completedTools, _cleanOutput(buffer.toString()),
@@ -645,21 +668,29 @@ $toolsJson''';
     return parts.join('\n\n');
   }
 
-  /// Strips model-specific special tokens that leak into the visible output.
+  /// Strips model-specific special tokens and reasoning blocks from output.
   static String _cleanOutput(String text) {
     return text
+        // Qwen3 / DeepSeek thinking blocks (complete).
+        .replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '')
+        // Partial <think> block still being generated — hide everything after it.
+        .replaceAll(RegExp(r'<think>.*$', dotAll: true), '')
+        // LFM2 tool call markers.
         .replaceAll(
             RegExp(r'<\|tool_call_start\|>.*?<\|tool_call_end\|>',
                 dotAll: true),
             '')
         .replaceAll(
             RegExp(r'<\|tool_call_start\|>.*$', dotAll: true), '')
+        // ChatML tool call blocks.
         .replaceAll(
             RegExp(r'<tool_call>.*?</tool_call>', dotAll: true), '')
+        // Raw JSON tool call objects.
         .replaceAll(
             RegExp(r'\{[^{}]*"tool"\s*:\s*"[^"]*"[^{}]*"arguments"[^{}]*\}',
                 dotAll: true),
             '')
+        // ChatML / LFM special tokens.
         .replaceAll(
             RegExp(r'<\|im_end\|>|<\|im_start\|>|<\|tool_call_end\|>'), '')
         .trim();
