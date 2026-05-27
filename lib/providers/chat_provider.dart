@@ -190,8 +190,8 @@ $toolLines''';
 
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
-      modelParams: ModelParams(path: path, gpuLayers: 99),
-      contextParams: const ContextParams(nCtx: 2048, nBatch: 512, nUbatch: 512),
+      modelParams: ModelParams(path: path, gpuLayers: 0),  // CPU-only: safer on MediaTek
+      contextParams: const ContextParams(nCtx: 2048, nBatch: 256, nUbatch: 256),
     );
 
     isModelReady = true;
@@ -453,9 +453,10 @@ $toolLines''';
         return;
       }
 
-      debugPrint('[AI] iter=$iter generating…');
+      debugPrint('[AI] iter=$iter generating… (nCtx=2048 cpu-only)');
       final buffer = StringBuffer();
       int tokenCount = 0;
+      bool firstToken = true;
 
       // Wrap stream with a per-event timeout so a stuck model doesn't hang forever.
       final stream = chat
@@ -464,9 +465,9 @@ $toolLines''';
             maxTokens: 256,
           )
           .timeout(
-            const Duration(seconds: 45),
+            const Duration(seconds: 120),
             onTimeout: (sink) {
-              debugPrint('[AI] ⚠️ generation timeout after 45s — closing stream');
+              debugPrint('[AI] ⚠️ generation timeout after 120s — closing stream');
               sink.close();
             },
           );
@@ -477,6 +478,10 @@ $toolLines''';
           case TokenEvent():
             buffer.write(event.text);
             tokenCount++;
+            if (firstToken) {
+              firstToken = false;
+              debugPrint('[AI] first token: "${event.text}"');
+            }
             // Log every 20 tokens so logcat shows the model IS working.
             if (tokenCount % 20 == 0) {
               final snippet = buffer.toString();
