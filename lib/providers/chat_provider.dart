@@ -57,10 +57,14 @@ class ChatProvider extends ChangeNotifier {
   /// Keyword-based tool selection — narrows the set passed in the system prompt
   /// to a relevant subset, keeping the prompt shorter.
   ///
-  /// Always includes web_fetch.  Returns the full tool set when no keyword
-  /// matches (so the model can pick any tool).
+  /// Returns an empty list for pure conversational messages so the model gets
+  /// a simple prompt with no tool definitions (and cannot hallucinate a call).
   List<Map<String, dynamic>> _toolsForMessage(String userMessage) {
-    final m = userMessage.toLowerCase();
+    final m = userMessage.toLowerCase().trim();
+
+    // Pure conversational / greeting — no tools needed.
+    if (_isConversational(m)) return [];
+
     final byName = {
       for (final t in _allTools) t['name'] as String: t,
     };
@@ -110,6 +114,20 @@ class ChatProvider extends ChangeNotifier {
     ])];
   }
 
+  /// Returns true for short conversational messages that need no tools.
+  static bool _isConversational(String m) {
+    // Very short (≤3 words) and no task-like punctuation/keywords.
+    if (m.split(' ').length > 3) return false;
+    if (m.contains('?') || m.contains(':') || m.contains('/')) return false;
+    const greetings = [
+      'hi', 'hello', 'hey', 'ok', 'okay', 'thanks', 'thank you', 'thx',
+      'yes', 'no', 'yep', 'nope', 'sure', 'great', 'cool', 'good',
+      'привет', 'пока', 'ок', 'окей', 'хорошо', 'спасибо', 'да', 'нет',
+      'понятно', 'ясно', 'отлично', 'супер', 'класс',
+    ];
+    return greetings.any((g) => m == g || m.startsWith('$g ') || m.endsWith(' $g'));
+  }
+
   static bool _kw(String msg, List<String> words) =>
       words.any((w) => msg.contains(w));
 
@@ -139,13 +157,14 @@ class ChatProvider extends ChangeNotifier {
     return '''You are a helpful AI assistant. /no_think
 Do NOT use <think> tags. Answer concisely.
 
-To call a tool output ONLY this JSON (one line):
+IMPORTANT: Only call a tool when the user explicitly asks to fetch data, create or list something. For greetings, general questions, or anything you can answer from knowledge — respond directly in plain text. Do NOT call tools speculatively.
+
+When a tool IS needed, output ONLY this JSON on one line, nothing else:
 {"tool":"name","arguments":{"key":"value"}}
 
-Then wait for the result and answer the user.
-If no tool needed, answer directly.
+Then stop and wait for the result before continuing.
 
-Tools:
+Available tools:
 $toolLines''';
   }
 
