@@ -200,20 +200,15 @@ $toolLines''';
     notifyListeners();
   }
 
-  /// (Re)creates the EngineChat with a fresh system prompt that includes
-  /// the current MCP tool list.  Call after model load or MCP reconnect.
+  /// Disposes the current EngineChat so the next message starts fresh.
+  /// The system prompt is rebuilt per-message in _runAgentLoop.
   void _rebuildChat() {
-    if (_engine == null) return;
-
-    // Fire-and-forget; caller may notifyListeners after.
+    // Fire-and-forget: just dispose stale chat; a fresh one is created
+    // in _runAgentLoop with the filtered tool set.
     () async {
       await _chat?.dispose();
-      _chat = await _engine!.createChat();
-      final tools = _allTools;
-      if (tools.isNotEmpty) {
-        _chat!.addSystem(_buildSystemPrompt(tools));
-      }
-      debugPrint('[AI] Chat rebuilt. Tools: ${tools.map((t) => t['name']).toList()}');
+      _chat = null;
+      debugPrint('[AI] Chat reset. Tools available: ${_allTools.map((t) => t['name']).toList()}');
     }();
   }
 
@@ -426,18 +421,25 @@ $toolLines''';
 
   Future<void> _runAgentLoop(String assistantId,
       {required String userMessage}) async {
-    // Ensure we have a chat (may be null if engine just loaded).
-    if (_chat == null) {
-      await _ensureChat();
-    }
-    final chat = _chat!;
+    if (_engine == null) throw StateError('Engine not loaded');
 
     _stopRequested = false;
     final completedTools = <String>[];
     const maxIterations = 8;
 
+    // Select only the tools relevant to this message — keeps the system
+    // prompt small so prefill stays fast on a phone CPU.
     final tools = _toolsForMessage(userMessage);
-    debugPrint('[AI] msg="$userMessage" tools=${tools.map((t) => t['name']).toList()}');
+    debugPrint('[AI] msg="${userMessage.substring(0, userMessage.length.clamp(0, 60))}" '
+        'tools=${tools.map((t) => t['name']).toList()}');
+
+    // Always rebuild chat fresh per message with the filtered tool set.
+    // This keeps the system prompt short (fast prefill) and avoids KV-cache
+    // bloat from earlier conversation turns on a resource-constrained device.
+    await _chat?.dispose();
+    _chat = await _engine!.createChat();
+    _chat!.addSystem(_buildSystemPrompt(tools));
+    final chat = _chat!;
 
     // Add the user message to the engine chat context.
     chat.addUser(userMessage);
