@@ -100,7 +100,9 @@ class ChatProvider extends ChangeNotifier {
       'list task', 'show task', 'my task', 'list todo', 'show todo',
       'список задач', 'покажи задачи', 'мои задачи',
     ])) {
-      return pick(['nc_calendar_list_todos']);
+      // Include list_calendars so the model can discover the exact calendar
+      // name before calling list_todos (avoids guessing "My Calendar" etc.).
+      return pick(['nc_calendar_list_calendars', 'nc_calendar_list_todos']);
     }
 
     if (_kw(m, [
@@ -214,7 +216,8 @@ Do NOT use <think> tags. Answer concisely in the same language as the user.
 2. For greetings, general knowledge, or questions you can answer directly — do NOT call any tool.
 3. Output EXACTLY one JSON line when calling a tool, nothing before or after:
 {"tool":"tool_name","arguments":{"key":"value"}}
-4. After receiving a <tool_result>, ALWAYS write a human-readable reply to the user. NEVER call the same tool again with the same arguments.
+4. After receiving a <tool_result>, present the data to the user in a clear, friendly format. NEVER say the tool failed unless the result contains an explicit error. NEVER call the same tool again with the same arguments.
+5. For nc_calendar_list_todos: ALWAYS call nc_calendar_list_calendars FIRST to get the exact calendar name, then use that exact name in nc_calendar_list_todos. NEVER guess a calendar name.
 
 ## Available tools
 $toolLines''';
@@ -632,14 +635,15 @@ $toolLines''';
 
       final toolResult = await _executeTool(toolName, toolArgs);
       debugPrint(
-          '[AI] tool result: ${toolResult.substring(0, toolResult.length.clamp(0, 200))}');
+          '[AI] tool result (${toolResult.length} chars): ${toolResult.substring(0, toolResult.length.clamp(0, 800))}');
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
       // Feed result + explicit instruction to respond (not loop).
       chat.addUser(
         '<tool_result name="$toolName">\n$toolResult\n</tool_result>\n'
-        'Now write a concise reply to the user based on this result.',
+        'The tool returned the data above. Present it clearly to the user. '
+        'Do NOT say the tool failed or returned nothing — the data is in the result above.',
       );
     }
 
