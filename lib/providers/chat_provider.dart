@@ -117,23 +117,36 @@ class ChatProvider extends ChangeNotifier {
 
   String _buildSystemPrompt(List<Map<String, dynamic>> tools) {
     if (tools.isEmpty) {
-      return 'You are a helpful AI assistant. Answer the user concisely.';
+      return 'You are a helpful AI assistant. /no_think Answer concisely.';
     }
 
-    final toolsJson = const JsonEncoder.withIndent('  ').convert(tools);
+    // Compact one-line format: saves ~10× tokens vs full JSON schema.
+    final toolLines = tools.map((t) {
+      final name = t['name'] as String? ?? '?';
+      // inputSchema may come from MCP tools; inputSchema.properties for params.
+      final schema = t['inputSchema'] as Map<String, dynamic>?
+          ?? t['parameters'] as Map<String, dynamic>?;
+      final props = schema?['properties'] as Map<String, dynamic>? ?? {};
+      final required = (schema?['required'] as List?)?.cast<String>() ?? [];
+      final params = props.entries.map((e) {
+        final type = (e.value as Map?)?['type'] as String? ?? 'any';
+        final req = required.contains(e.key) ? '' : '?';
+        return '${e.key}$req:$type';
+      }).join(', ');
+      return '- $name($params)';
+    }).join('\n');
 
-    return '''You are a helpful AI assistant with access to tools. /no_think
+    return '''You are a helpful AI assistant. /no_think
+Do NOT use <think> tags. Answer concisely.
 
-Answer concisely. Do NOT use <think> tags or internal reasoning.
+To call a tool output ONLY this JSON (one line):
+{"tool":"name","arguments":{"key":"value"}}
 
-To call a tool, output ONLY a JSON object:
-{"tool": "tool_name", "arguments": {"param": "value"}}
+Then wait for the result and answer the user.
+If no tool needed, answer directly.
 
-After receiving the tool result, give your final answer.
-If no tool is needed, answer directly — no JSON.
-
-Available tools:
-$toolsJson''';
+Tools:
+$toolLines''';
   }
 
   // ── Initialisation ────────────────────────────────────────────────────────
@@ -178,7 +191,7 @@ $toolsJson''';
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
       modelParams: ModelParams(path: path, gpuLayers: 99),
-      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
+      contextParams: const ContextParams(nCtx: 2048, nBatch: 512, nUbatch: 512),
     );
 
     isModelReady = true;
