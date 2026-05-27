@@ -82,49 +82,49 @@ class ChatProvider extends ChangeNotifier {
       'сегодня', 'завтра', 'послезавтра', 'на неделе', 'на этой неделе',
       'today', 'tomorrow', 'this week', 'next week',
     ])) {
-      return [webFetchToolDef, ...pick([
+      return pick([
         'nc_calendar_list_calendars',
         'nc_calendar_get_upcoming_events',
         'nc_calendar_create_event',
         'nc_calendar_list_todos',
         'nc_calendar_create_todo',
-      ])];
+      ]);
     }
 
     // Contacts.
     if (_kw(m, ['contact', 'phone', 'контакт', 'телефон', 'адресн'])) {
-      return [webFetchToolDef, ...pick([
+      return pick([
         'nc_contacts_list_contacts',
         'nc_contacts_get_contact',
         'nc_contacts_create_contact',
-      ])];
+      ]);
     }
 
     // Notes.
     if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
-      return [webFetchToolDef, ...pick([
+      return pick([
         'nc_notes_list_notes',
         'nc_notes_create_note',
         'nc_notes_get_note',
-      ])];
+      ]);
     }
 
     // Files.
     if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
-      return [webFetchToolDef, ...pick([
+      return pick([
         'nc_files_list_files',
         'nc_files_upload_file',
         'nc_files_get_file_info',
-      ])];
+      ]);
     }
 
     // Kanban / deck.
     if (_kw(m, ['deck', 'board', 'kanban', 'card', 'борд', 'канбан'])) {
-      return [webFetchToolDef, ...pick([
+      return pick([
         'nc_deck_list_boards',
         'nc_deck_create_card',
         'nc_deck_list_cards',
-      ])];
+      ]);
     }
 
     // No keyword match → pure conversational, no tools.
@@ -157,7 +157,13 @@ class ChatProvider extends ChangeNotifier {
       return '- $name($params)';
     }).join('\n');
 
+    final now = DateTime.now();
+    final dateStr =
+        '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')} '
+        '${now.hour.toString().padLeft(2,'0')}:${now.minute.toString().padLeft(2,'0')}';
+
     return '''You are a helpful AI assistant. /no_think
+Current date and time: $dateStr
 Do NOT use <think> tags. Answer concisely.
 
 IMPORTANT: Only call a tool when the user explicitly asks to fetch data, create or list something. For greetings, general questions, or anything you can answer from knowledge — respond directly in plain text. Do NOT call tools speculatively.
