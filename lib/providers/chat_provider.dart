@@ -54,16 +54,12 @@ class ChatProvider extends ChangeNotifier {
         ...(_mcp?.tools ?? []),
       ];
 
-  /// Keyword-based tool selection — narrows the set passed in the system prompt
-  /// to a relevant subset, keeping the prompt shorter.
+  /// Keyword-based tool selection — returns only tools relevant to this message.
   ///
-  /// Returns an empty list for pure conversational messages so the model gets
-  /// a simple prompt with no tool definitions (and cannot hallucinate a call).
+  /// Default is NO tools: the model gets a simple conversational prompt.
+  /// Tools are added only when the message contains explicit task keywords.
   List<Map<String, dynamic>> _toolsForMessage(String userMessage) {
-    final m = userMessage.toLowerCase().trim();
-
-    // Pure conversational / greeting — no tools needed.
-    if (_isConversational(m)) return [];
+    final m = userMessage.toLowerCase();
 
     final byName = {
       for (final t in _allTools) t['name'] as String: t,
@@ -72,9 +68,30 @@ class ChatProvider extends ChangeNotifier {
     List<Map<String, dynamic>> pick(List<String> names) =>
         names.map((n) => byName[n]).whereType<Map<String, dynamic>>().toList();
 
-    if (_kw(m, ['http://', 'https://', 'fetch url', 'open url'])) {
+    // Explicit URL → web fetch only.
+    if (_kw(m, ['http://', 'https://'])) {
       return [webFetchToolDef];
     }
+
+    // Calendar / tasks.
+    if (_kw(m, [
+      'calendar', 'event', 'meeting', 'schedule', 'appointment', 'remind',
+      'task', 'todo', 'deadline',
+      'календар', 'событи', 'встреч', 'расписани', 'напомн',
+      'задач', 'дедлайн', 'план',
+      'сегодня', 'завтра', 'послезавтра', 'на неделе', 'на этой неделе',
+      'today', 'tomorrow', 'this week', 'next week',
+    ])) {
+      return [webFetchToolDef, ...pick([
+        'nc_calendar_list_calendars',
+        'nc_calendar_get_upcoming_events',
+        'nc_calendar_create_event',
+        'nc_calendar_list_todos',
+        'nc_calendar_create_todo',
+      ])];
+    }
+
+    // Contacts.
     if (_kw(m, ['contact', 'phone', 'контакт', 'телефон', 'адресн'])) {
       return [webFetchToolDef, ...pick([
         'nc_contacts_list_contacts',
@@ -82,6 +99,8 @@ class ChatProvider extends ChangeNotifier {
         'nc_contacts_create_contact',
       ])];
     }
+
+    // Notes.
     if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
       return [webFetchToolDef, ...pick([
         'nc_notes_list_notes',
@@ -89,6 +108,8 @@ class ChatProvider extends ChangeNotifier {
         'nc_notes_get_note',
       ])];
     }
+
+    // Files.
     if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
       return [webFetchToolDef, ...pick([
         'nc_files_list_files',
@@ -96,6 +117,8 @@ class ChatProvider extends ChangeNotifier {
         'nc_files_get_file_info',
       ])];
     }
+
+    // Kanban / deck.
     if (_kw(m, ['deck', 'board', 'kanban', 'card', 'борд', 'канбан'])) {
       return [webFetchToolDef, ...pick([
         'nc_deck_list_boards',
@@ -104,28 +127,8 @@ class ChatProvider extends ChangeNotifier {
       ])];
     }
 
-    // Default: calendar + tasks (most common).
-    return [webFetchToolDef, ...pick([
-      'nc_calendar_list_calendars',
-      'nc_calendar_get_upcoming_events',
-      'nc_calendar_create_event',
-      'nc_calendar_list_todos',
-      'nc_calendar_create_todo',
-    ])];
-  }
-
-  /// Returns true for short conversational messages that need no tools.
-  static bool _isConversational(String m) {
-    // Very short (≤3 words) and no task-like punctuation/keywords.
-    if (m.split(' ').length > 3) return false;
-    if (m.contains('?') || m.contains(':') || m.contains('/')) return false;
-    const greetings = [
-      'hi', 'hello', 'hey', 'ok', 'okay', 'thanks', 'thank you', 'thx',
-      'yes', 'no', 'yep', 'nope', 'sure', 'great', 'cool', 'good',
-      'привет', 'пока', 'ок', 'окей', 'хорошо', 'спасибо', 'да', 'нет',
-      'понятно', 'ясно', 'отлично', 'супер', 'класс',
-    ];
-    return greetings.any((g) => m == g || m.startsWith('$g ') || m.endsWith(' $g'));
+    // No keyword match → pure conversational, no tools.
+    return [];
   }
 
   static bool _kw(String msg, List<String> words) =>
