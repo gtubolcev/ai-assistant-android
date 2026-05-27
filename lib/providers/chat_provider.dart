@@ -559,11 +559,17 @@ $toolLines''';
         }
       }
       final combined = todoParts.isEmpty ? 'No tasks found in any calendar.' : todoParts.join('\n');
-      calledTools.add('nc_calendar_list_todos:{}');
+      // Block these tools by name-only sentinel so the model can't re-call them
+      // with any argument variation (model tends to re-call with {key:calendars}).
+      calledTools.add('nc_calendar_list_todos');
+      calledTools.add('nc_calendar_list_calendars');
       completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_todos ✓';
 
       chat.addUser('<tool_result name="nc_calendar_list_todos">\n$combined\n</tool_result>');
-      const taskPrefix = 'Here is what I found:';
+      // Add an explicit summarize instruction so the model produces prose, not JSON.
+      chat.addUser('Summarize the tasks above in a clear, human-readable list. '
+          'Do not use JSON. Do not call any tools. Just list the tasks.');
+      const taskPrefix = 'Here are your tasks:';
       chat.addAssistant(taskPrefix);
       assistantPrefix = taskPrefix;
     }
@@ -673,8 +679,9 @@ $toolLines''';
       final callKey = '$toolName:${jsonEncode(toolArgs)}';
       debugPrint('[AI] tool call: $toolName($toolArgs)');
 
-      // Anti-loop: same tool + same args already called → treat as final answer.
-      if (calledTools.contains(callKey)) {
+      // Anti-loop: same tool + same args already called, OR tool blocked by
+      // name-only sentinel (e.g. after auto-trigger) → treat as final answer.
+      if (calledTools.contains(callKey) || calledTools.contains(toolName)) {
         debugPrint('[AI] ⚠️ duplicate tool call detected, stopping loop');
         _updateMessage(
           assistantId,
@@ -1015,6 +1022,9 @@ $toolLines''';
         // ChatML tool call blocks.
         .replaceAll(
             RegExp(r'<tool_call>.*?</tool_call>', dotAll: true), '')
+        // Markdown code-fence blocks containing JSON (model echoes tool results).
+        .replaceAll(RegExp(r'```(?:json)?\s*\{[\s\S]*?\}\s*```', dotAll: true), '')
+        .replaceAll(RegExp(r'```(?:json)?\s*\{[\s\S]*$', dotAll: true), '')
         // Raw JSON tool call objects (with or without arguments field).
         .replaceAll(
             RegExp(r'\{[^{}]*"tool"\s*:\s*"[^"]*"[^{}]*\}', dotAll: true), '')

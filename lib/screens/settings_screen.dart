@@ -263,8 +263,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       '/storage/emulated/0/Downloads/ai_assistant_backup.json',
     ];
     for (final path in candidates) {
-      final f = File(path);
-      if (f.existsSync()) return f;
+      try {
+        final f = File(path);
+        if (f.existsSync()) return f;
+      } catch (_) {}
     }
     return null;
   }
@@ -295,7 +297,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
         if (confirmed == true) {
-          bytes = found.readAsBytesSync();
+          try {
+            bytes = found.readAsBytesSync();
+          } catch (_) {
+            // Permission denied on Android 11+ — fall through to file picker.
+          }
         }
         // confirmed == false → fall through to file picker
         // confirmed == null (dismissed) → cancel
