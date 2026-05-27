@@ -54,45 +54,78 @@ class ChatProvider extends ChangeNotifier {
         ...(_mcp?.tools ?? []),
       ];
 
-  /// Keyword-based tool selection — returns only tools relevant to this message.
+  /// Returns the minimal set of tools needed for this message.
   ///
-  /// Default is NO tools: the model gets a simple conversational prompt.
-  /// Tools are added only when the message contains explicit task keywords.
+  /// Strategy: narrow sets prevent the model from picking the wrong tool.
+  /// The model sees only 1-3 tools and picks from those; the less choice,
+  /// the less hallucination. Default = no tools (conversational).
   List<Map<String, dynamic>> _toolsForMessage(String userMessage) {
     final m = userMessage.toLowerCase();
-
-    final byName = {
-      for (final t in _allTools) t['name'] as String: t,
-    };
-
+    final byName = {for (final t in _allTools) t['name'] as String: t};
     List<Map<String, dynamic>> pick(List<String> names) =>
         names.map((n) => byName[n]).whereType<Map<String, dynamic>>().toList();
 
-    // Explicit URL → web fetch only.
-    if (_kw(m, ['http://', 'https://'])) {
-      return [webFetchToolDef];
+    // ── Web ──────────────────────────────────────────────────────────────────
+    if (_kw(m, ['http://', 'https://'])) return [webFetchToolDef];
+
+    // ── Calendar: list which calendars exist ─────────────────────────────────
+    if (_kw(m, ['list calendar', 'show calendar', 'what calendar',
+                 'список календар', 'покажи календар'])) {
+      return pick(['nc_calendar_list_calendars']);
     }
 
-    // Calendar / tasks.
+    // ── Calendar: upcoming events / agenda ───────────────────────────────────
     if (_kw(m, [
-      'calendar', 'event', 'meeting', 'schedule', 'appointment', 'remind',
-      'task', 'todo', 'deadline',
-      'календар', 'событи', 'встреч', 'расписани', 'напомн',
-      'задач', 'дедлайн', 'план',
-      'сегодня', 'завтра', 'послезавтра', 'на неделе', 'на этой неделе',
+      'list event', 'show event', 'upcoming event', 'upcoming meeting',
+      'what event', 'what meeting', 'my event', 'my meeting',
+      "what's on", "what is on", 'agenda', 'schedule',
+      'список событий', 'покажи события', 'что запланировано',
+      'что сегодня', 'что завтра', 'что на неделе',
       'today', 'tomorrow', 'this week', 'next week',
+      'сегодня', 'завтра', 'на неделе', 'расписани',
     ])) {
+      return pick(['nc_calendar_get_upcoming_events', 'nc_calendar_list_events']);
+    }
+
+    // ── Calendar: create event ───────────────────────────────────────────────
+    if (_kw(m, [
+      'create event', 'add event', 'new event', 'schedule meeting',
+      'создай событие', 'добавь событие', 'запланируй', 'встречу',
+    ])) {
+      return pick(['nc_calendar_create_event']);
+    }
+
+    // ── Tasks / todos ────────────────────────────────────────────────────────
+    if (_kw(m, [
+      'list task', 'show task', 'my task', 'list todo', 'show todo',
+      'список задач', 'покажи задачи', 'мои задачи',
+    ])) {
+      return pick(['nc_calendar_list_todos']);
+    }
+
+    if (_kw(m, [
+      'create task', 'add task', 'new task', 'create todo', 'add todo',
+      'создай задачу', 'добавь задачу',
+    ])) {
+      return pick(['nc_calendar_create_todo']);
+    }
+
+    // ── Calendar (generic — anything with 'calendar', 'event', 'meeting') ───
+    if (_kw(m, ['calendar', 'event', 'meeting', 'appointment', 'remind',
+                 'task', 'todo', 'deadline',
+                 'календар', 'событи', 'встреч', 'напомн',
+                 'задач', 'дедлайн', 'план'])) {
       return pick([
-        'nc_calendar_list_calendars',
         'nc_calendar_get_upcoming_events',
         'nc_calendar_create_event',
         'nc_calendar_list_todos',
         'nc_calendar_create_todo',
+        'nc_calendar_list_calendars',
       ]);
     }
 
-    // Contacts.
-    if (_kw(m, ['contact', 'phone', 'контакт', 'телефон', 'адресн'])) {
+    // ── Contacts ─────────────────────────────────────────────────────────────
+    if (_kw(m, ['contact', 'phone number', 'контакт', 'телефон', 'адресн'])) {
       return pick([
         'nc_contacts_list_contacts',
         'nc_contacts_get_contact',
@@ -100,7 +133,7 @@ class ChatProvider extends ChangeNotifier {
       ]);
     }
 
-    // Notes.
+    // ── Notes ────────────────────────────────────────────────────────────────
     if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
       return pick([
         'nc_notes_list_notes',
@@ -109,7 +142,7 @@ class ChatProvider extends ChangeNotifier {
       ]);
     }
 
-    // Files.
+    // ── Files ────────────────────────────────────────────────────────────────
     if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
       return pick([
         'nc_files_list_files',
@@ -118,7 +151,7 @@ class ChatProvider extends ChangeNotifier {
       ]);
     }
 
-    // Kanban / deck.
+    // ── Kanban ───────────────────────────────────────────────────────────────
     if (_kw(m, ['deck', 'board', 'kanban', 'card', 'борд', 'канбан'])) {
       return pick([
         'nc_deck_list_boards',
@@ -127,7 +160,7 @@ class ChatProvider extends ChangeNotifier {
       ]);
     }
 
-    // No keyword match → pure conversational, no tools.
+    // ── Default: no tools → conversational response ──────────────────────────
     return [];
   }
 
@@ -136,46 +169,54 @@ class ChatProvider extends ChangeNotifier {
 
   // ── System prompt ─────────────────────────────────────────────────────────
 
-  String _buildSystemPrompt(List<Map<String, dynamic>> tools) {
+  static String _nowStr() {
     final now = DateTime.now();
-    final dateStr =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')} '
+        '${now.hour.toString().padLeft(2, '0')}:'
+        '${now.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _buildSystemPrompt(List<Map<String, dynamic>> tools) {
+    final dateStr = _nowStr();
 
     if (tools.isEmpty) {
       return 'You are a helpful AI assistant. /no_think\n'
           'Current date and time: $dateStr\n'
-          'Answer concisely.';
+          'Answer concisely. Do not use <think> tags.';
     }
 
-    // Compact one-line format: saves ~10× tokens vs full JSON schema.
+    // One line per tool: signature + first sentence of description.
     final toolLines = tools.map((t) {
       final name = t['name'] as String? ?? '?';
-      // inputSchema may come from MCP tools; inputSchema.properties for params.
+      final rawDesc = t['description'] as String? ?? '';
+      final desc = rawDesc.split(RegExp(r'[.\n]')).first.trim();
       final schema = t['inputSchema'] as Map<String, dynamic>?
           ?? t['parameters'] as Map<String, dynamic>?;
       final props = schema?['properties'] as Map<String, dynamic>? ?? {};
       final required = (schema?['required'] as List?)?.cast<String>() ?? [];
       final params = props.entries.map((e) {
         final type = (e.value as Map?)?['type'] as String? ?? 'any';
-        final req = required.contains(e.key) ? '' : '?';
-        return '${e.key}$req:$type';
+        final opt = required.contains(e.key) ? '' : '?';
+        return '${e.key}$opt:$type';
       }).join(', ');
-      return '- $name($params)';
+      return desc.isNotEmpty
+          ? '- $name($params) → $desc'
+          : '- $name($params)';
     }).join('\n');
 
     return '''You are a helpful AI assistant. /no_think
 Current date and time: $dateStr
-Do NOT use <think> tags. Answer concisely.
+Do NOT use <think> tags. Answer concisely in the same language as the user.
 
-IMPORTANT: Only call a tool when the user explicitly asks to fetch data, create or list something. For greetings, general questions, or anything you can answer from knowledge — respond directly in plain text. Do NOT call tools speculatively.
+## Tool use rules
+1. Call a tool ONLY when you need live data (calendar, contacts, files, etc.).
+2. For greetings, general knowledge, or questions you can answer directly — do NOT call any tool.
+3. Output EXACTLY one JSON line when calling a tool, nothing before or after:
+{"tool":"tool_name","arguments":{"key":"value"}}
+4. After receiving a <tool_result>, ALWAYS write a human-readable reply to the user. NEVER call the same tool again with the same arguments.
 
-When a tool IS needed, output ONLY this JSON on one line, nothing else:
-{"tool":"name","arguments":{"key":"value"}}
-
-Then stop and wait for the result before continuing.
-
-Available tools:
+## Available tools
 $toolLines''';
   }
 
@@ -455,7 +496,9 @@ $toolLines''';
 
     _stopRequested = false;
     final completedTools = <String>[];
-    const maxIterations = 8;
+    const maxIterations = 5;
+    // Track (toolName, argsJson) to detect identical repeated calls.
+    final calledTools = <String>{};
 
     // Select only the tools relevant to this message — keeps the system
     // prompt small so prefill stays fast on a phone CPU.
@@ -485,7 +528,7 @@ $toolLines''';
         return;
       }
 
-      debugPrint('[AI] iter=$iter generating… (nCtx=2048 cpu-only)');
+      debugPrint('[AI] iter=$iter generating… (nCtx=4096 cpu-only)');
       final buffer = StringBuffer();
       int tokenCount = 0;
       bool firstToken = true;
@@ -565,7 +608,20 @@ $toolLines''';
 
       // ── Execute tool ─────────────────────────────────────────────────────
       final (toolName, toolArgs) = call;
+      final callKey = '$toolName:${jsonEncode(toolArgs)}';
       debugPrint('[AI] tool call: $toolName($toolArgs)');
+
+      // Anti-loop: same tool + same args already called → treat as final answer.
+      if (calledTools.contains(callKey)) {
+        debugPrint('[AI] ⚠️ duplicate tool call detected, stopping loop');
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, _cleanOutput(rawText), pending: false),
+          MessageStatus.done,
+        );
+        return;
+      }
+      calledTools.add(callKey);
 
       completedTools.add('🔧 $toolName…');
       _updateMessage(
@@ -580,8 +636,11 @@ $toolLines''';
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
-      // Feed the result back as a user message so the model can continue.
-      chat.addUser('<tool_result name="$toolName">\n$toolResult\n</tool_result>');
+      // Feed result + explicit instruction to respond (not loop).
+      chat.addUser(
+        '<tool_result name="$toolName">\n$toolResult\n</tool_result>\n'
+        'Now write a concise reply to the user based on this result.',
+      );
     }
 
     _updateMessage(
