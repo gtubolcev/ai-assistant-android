@@ -255,7 +255,6 @@ $toolLines''';
 
       await _loadEngine(_activeModelPath);
       await _connectMcp();
-      _rebuildChat();
     } catch (e) {
       errorText = 'Ошибка инициализации: $e';
       statusText = 'Ошибка';
@@ -286,18 +285,6 @@ $toolLines''';
     notifyListeners();
   }
 
-  /// Disposes the current EngineChat so the next message starts fresh.
-  /// The system prompt is rebuilt per-message in _runAgentLoop.
-  void _rebuildChat() {
-    // Fire-and-forget: just dispose stale chat; a fresh one is created
-    // in _runAgentLoop with the filtered tool set.
-    () async {
-      await _chat?.dispose();
-      _chat = null;
-      debugPrint('[AI] Chat reset. Tools available: ${_allTools.map((t) => t['name']).toList()}');
-    }();
-  }
-
   // ── Import from local file ────────────────────────────────────────────────
 
   /// Loads a GGUF model from [filePath] and saves the path for next launch.
@@ -312,7 +299,6 @@ $toolLines''';
       await prefs.setString(_kModelPathKey, filePath);
 
       await _loadEngine(filePath);
-      _rebuildChat();
 
       statusText = isMcpConnected
           ? 'Готово (${_mcp!.tools.length} инструментов)'
@@ -426,9 +412,6 @@ $toolLines''';
         bearerToken: prefs.getString('mcp_token') ?? '',
       );
       await _mcp!.connect();
-
-      // Rebuild chat so the new tool list is included in the system prompt.
-      _rebuildChat();
 
       statusText = isModelReady
           ? 'Готово (${_mcp!.tools.length} инструментов)'
@@ -773,21 +756,6 @@ $toolLines''';
       MessageStatus.done,
     );
     return null;
-  }
-
-  /// Waits up to 3 seconds for the async _rebuildChat to complete.
-  Future<void> _ensureChat() async {
-    for (int i = 0; i < 30 && _chat == null; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    if (_chat == null && _engine != null) {
-      // Fallback: create chat synchronously if _rebuildChat never fired.
-      _chat = await _engine!.createChat();
-      final tools = _allTools;
-      if (tools.isNotEmpty) {
-        _chat!.addSystem(_buildSystemPrompt(tools));
-      }
-    }
   }
 
   // ── Tool-call parser ──────────────────────────────────────────────────────
