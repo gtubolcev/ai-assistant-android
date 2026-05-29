@@ -276,7 +276,13 @@ $toolLines''';
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
       modelParams: ModelParams(path: path, gpuLayers: 0),  // CPU-only: safer on MediaTek
-      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
+      contextParams: const ContextParams(
+        nCtx: 4096,
+        nBatch: 512,
+        nUbatch: 512,
+        opOffload: false,  // disable op offload — GPU backend on MediaTek has invalid function pointers
+        swaFull: false,    // don't allocate full SWA cache on memory-constrained device
+      ),
     );
 
     isModelReady = true;
