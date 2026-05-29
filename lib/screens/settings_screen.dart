@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -276,15 +277,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       Uint8List? bytes;
 
-      // ── Auto-detect: try reading backup directly from Downloads ──────────────
-      // Works on Android ≤12 with READ_EXTERNAL_STORAGE.
-      // On Android 13+ (scoped storage) readAsBytesSync throws — we fall
-      // through silently to the file picker without bothering the user.
+      // ── On Android 11+: MANAGE_EXTERNAL_STORAGE lets us read Downloads ──────
+      // If not yet granted, offer to open system settings before auto-detect.
+      // The permission survives across launches but is reset on app uninstall.
+      if (Platform.isAndroid) {
+        final status = await Permission.manageExternalStorage.status;
+        if (!status.isGranted && mounted) {
+          final wantPermission = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Доступ к файлам'),
+              content: const Text(
+                'Для авто-поиска бэкапа в папке Загрузки нужно разрешение '
+                '"Доступ ко всем файлам".\n\n'
+                'Выдайте разрешение в настройках и вернитесь — '
+                'или выберите файл вручную.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Выбрать вручную'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Открыть настройки'),
+                ),
+              ],
+            ),
+          );
+          if (wantPermission == null) {
+            setState(() => _importing = false);
+            return;
+          }
+          if (wantPermission) {
+            await Permission.manageExternalStorage.request();
+          }
+        }
+      }
+
+      // ── Auto-detect: find and read backup from Downloads ─────────────────────
       final found = _findBackupInDownloads();
       if (found != null) {
         try {
           final data = found.readAsBytesSync();
-          // Read succeeded — ask for confirmation before applying.
           if (mounted) {
             final confirmed = await showDialog<bool>(
               context: context,
@@ -310,11 +345,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             bytes = data;
           }
         } catch (_) {
-          // Scoped storage (Android 13+): direct read denied — use file picker.
+          // Still denied — fall through to file picker silently.
         }
       }
 
-      // ── File picker ──────────────────────────────────────────────────────────
+      // ── File picker (if auto-detect failed or no backup found) ───────────────
       if (bytes == null) {
         final result = await FilePicker.platform.pickFiles(
           type: FileType.custom,
