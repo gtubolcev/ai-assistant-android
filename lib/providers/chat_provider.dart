@@ -586,6 +586,11 @@ $toolLines''';
       const taskPrefix = 'Here are your tasks:';
       chat.addAssistant(taskPrefix);
       assistantPrefix = taskPrefix;
+    } else {
+      // For non-task queries the assistant turn hasn't been opened yet.
+      // llama_cpp_dart requires addAssistant() before the first generate()
+      // call — without it, the chat template is malformed and causes SIGSEGV.
+      chat.addAssistant('');
     }
 
     for (int iter = 0; iter < maxIterations; iter++) {
