@@ -29,6 +29,10 @@ class AiAssistantApp extends StatelessWidget {
         ),
         useMaterial3: true,
         fontFamily: 'Roboto',
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          width: 340,
+        ),
       ),
       home: const ChatScreen(),
     );

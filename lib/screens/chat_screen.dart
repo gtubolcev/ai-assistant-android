@@ -397,11 +397,15 @@ class _MessageBubbleState extends State<_MessageBubble> {
             child: GestureDetector(
               onLongPress: () {
                 Clipboard.setData(ClipboardData(text: message.content));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Скопировано'),
-                      duration: Duration(seconds: 1)),
-                );
+                final h = MediaQuery.of(context).size.height;
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(SnackBar(
+                    content: const Text('Скопировано'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: const Duration(seconds: 1),
+                    margin: EdgeInsets.only(bottom: h - 120, left: 16, right: 16),
+                  ));
               },
               child: Container(
                 padding:

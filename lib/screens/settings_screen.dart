@@ -73,6 +73,19 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  void _notify(String message) {
+    if (!mounted) return;
+    final h = MediaQuery.of(context).size.height;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: EdgeInsets.only(bottom: h - 120, left: 16, right: 16),
+      ));
+  }
+
   // MCP fields
   final _urlCtrl = TextEditingController();
   final _mcpUserCtrl = TextEditingController();
@@ -125,11 +138,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           password: _caldavPassCtrl.text,
         );
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('💾 CalDAV настройки сохранены. Перезапустите приложение.'),
-        ),
-      );
+      _notify('💾 CalDAV настройки сохранены. Перезапустите приложение.');
       setState(() => _savingCaldav = false);
     }
   }
@@ -146,13 +155,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
     if (mounted) {
       final connected = context.read<ChatProvider>().isMcpConnected;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(connected
-              ? '✅ Подключено к MCP серверу'
-              : '⚠️ Не удалось подключиться к MCP'),
-        ),
-      );
+      _notify(connected ? '✅ Подключено к MCP серверу' : '⚠️ Не удалось подключиться к MCP');
       setState(() => _savingMcp = false);
     }
   }
@@ -192,9 +195,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (path == null || !mounted) return;
 
     if (!path.toLowerCase().endsWith('.gguf')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('⚠️ Выберите файл с расширением .gguf')),
-      );
+      _notify('⚠️ Выберите файл с расширением .gguf');
       return;
     }
 
@@ -204,13 +205,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (mounted) {
       final provider = context.read<ChatProvider>();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(provider.isModelReady
-              ? '✅ Модель загружена: ${provider.activeModelName}'
-              : '⚠️ ${provider.errorText ?? 'Не удалось загрузить модель'}'),
-        ),
-      );
+      _notify(provider.isModelReady
+          ? '✅ Модель загружена: ${provider.activeModelName}'
+          : '⚠️ ${provider.errorText ?? 'Не удалось загрузить модель'}');
       setState(() => _pickingModel = false);
     }
   }
@@ -236,19 +233,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(savedPath != null
-                ? '✅ Бэкап сохранён'
-                : 'Сохранение отменено'),
-          ),
-        );
+        _notify(savedPath != null ? '✅ Бэкап сохранён' : 'Сохранение отменено');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('⚠️ Ошибка экспорта: $e')),
-        );
+        _notify('⚠️ Ошибка экспорта: $e');
       }
     } finally {
       if (mounted) setState(() => _exporting = false);
@@ -287,15 +276,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               password: prefs.getString('mcp_password') ?? '',
               token: prefs.getString('mcp_token') ?? '',
             );
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ Настройки восстановлены и применены')),
-        );
+        _notify('✅ Настройки восстановлены и применены');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('⚠️ Ошибка импорта: $e')),
-        );
+        _notify('⚠️ Ошибка импорта: $e');
       }
     } finally {
       if (mounted) setState(() => _importing = false);

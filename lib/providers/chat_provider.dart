@@ -715,10 +715,22 @@ $toolLines''';
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
+      // ── Calendar list: output directly, don't let model re-format ───────────
+      // The 1.2B model loops on nc_calendar_list_calendars — after seeing the
+      // tool result it calls the tool again instead of presenting the list.
+      // Just strip IDs and return the formatted result directly.
+      if (toolName == 'nc_calendar_list_calendars' && !isTaskQuery) {
+        final display = toolResult.replaceAll(RegExp(r' \(id: [^)]+\)'), '');
+        final cleanAnswer = _cleanOutput(display);
+        _updateMessage(
+          assistantId,
+          _buildDisplay(completedTools, cleanAnswer, pending: false),
+          MessageStatus.done,
+        );
+        return cleanAnswer;
+      }
+
       // ── Auto-cascade: list_calendars → list_todos for task queries ──────────
-      // LFM2-1.2B ignores multi-step instructions, so we do the second step
-      // automatically: after the model lists calendars, we call list_todos for
-      // each non-birthday calendar and combine results.
       if (toolName == 'nc_calendar_list_calendars' && isTaskQuery) {
         final calIds = _filterCalendarIds(_extractCalendars(toolResult), userMessage);
         completedTools.add('🔧 nc_calendar_list_todos…');
@@ -746,18 +758,10 @@ $toolLines''';
 
       // Feed result, then add a partial assistant prefix so the model
       // continues with plain text instead of generating another JSON tool call.
-      // Strip internal IDs from calendar list — the model echoes them and the
-      // user doesn't need to see them (IDs are kept in toolResult for our code).
-      final modelResult = toolName == 'nc_calendar_list_calendars'
-          ? toolResult.replaceAll(RegExp(r' \(id: [^)]+\)'), '')
-          : toolResult;
       chat.addUser(
-        '<tool_result name="$toolName">\n$modelResult\n</tool_result>',
+        '<tool_result name="$toolName">\n$toolResult\n</tool_result>',
       );
-      // Seed the assistant turn. For calendar list, force one-per-line format.
-      final prefix = toolName == 'nc_calendar_list_calendars'
-          ? 'Your calendars (one per line):\n'
-          : 'Here is what I found:';
+      const prefix = 'Here is what I found:';
       chat.addAssistant(prefix);
       assistantPrefix = prefix;
     }
