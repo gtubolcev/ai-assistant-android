@@ -746,8 +746,13 @@ $toolLines''';
 
       // Feed result, then add a partial assistant prefix so the model
       // continues with plain text instead of generating another JSON tool call.
+      // Strip internal IDs from calendar list — the model echoes them and the
+      // user doesn't need to see them (IDs are kept in toolResult for our code).
+      final modelResult = toolName == 'nc_calendar_list_calendars'
+          ? toolResult.replaceAll(RegExp(r' \(id: [^)]+\)'), '')
+          : toolResult;
       chat.addUser(
-        '<tool_result name="$toolName">\n$toolResult\n</tool_result>',
+        '<tool_result name="$toolName">\n$modelResult\n</tool_result>',
       );
       // Seed the assistant turn with a neutral opener so the model continues
       // with prose rather than emitting a JSON tool call.
