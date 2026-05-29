@@ -40,10 +40,21 @@ class ChatProvider extends ChangeNotifier {
   bool _stopRequested = false;
   String _activeModelPath = '';
 
+  // Recent conversation history injected into each new chat context.
+  // Keeps the model aware of what was just discussed without re-processing
+  // tool results (those are reconstructed per-turn from fresh MCP calls).
+  static const _kMaxHistory = 4;
+  final _history = <({String user, String assistant})>[];
+
   /// Request the current generation to stop at the next safe checkpoint.
   void stopGeneration() {
     _stopRequested = true;
     notifyListeners();
+  }
+
+  /// Clears the in-memory conversation history (does not affect displayed messages).
+  void clearHistory() {
+    _history.clear();
   }
 
   // ── Tool helpers ──────────────────────────────────────────────────────────
@@ -266,7 +277,7 @@ $toolLines''';
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
       modelParams: ModelParams(path: path, gpuLayers: 0),  // CPU-only: safer on MediaTek
-      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
+      contextParams: const ContextParams(nCtx: 8192, nBatch: 512, nUbatch: 512),
     );
 
     isModelReady = true;
@@ -483,7 +494,11 @@ $toolLines''';
     notifyListeners();
 
     try {
-      await _runAgentLoop(assistantId, userMessage: text.trim());
+      final answer = await _runAgentLoop(assistantId, userMessage: text.trim());
+      if (answer != null && answer.isNotEmpty) {
+        _history.add((user: text.trim(), assistant: answer));
+        while (_history.length > _kMaxHistory) _history.removeAt(0);
+      }
     } catch (e) {
       _updateMessage(assistantId, 'Ошибка: $e', MessageStatus.error);
     } finally {
@@ -494,7 +509,7 @@ $toolLines''';
 
   // ── Agent loop ────────────────────────────────────────────────────────────
 
-  Future<void> _runAgentLoop(String assistantId,
+  Future<String?> _runAgentLoop(String assistantId,
       {required String userMessage}) async {
     if (_engine == null) throw StateError('Engine not loaded');
 
@@ -526,6 +541,12 @@ $toolLines''';
     _chat = await _engine!.createChat();
     _chat!.addSystem(_buildSystemPrompt(tools));
     final chat = _chat!;
+
+    // Inject recent conversation history so the model has continuity.
+    for (final turn in _history) {
+      chat.addUser(turn.user);
+      chat.addAssistant(turn.assistant);
+    }
 
     // Add the user message to the engine chat context.
     chat.addUser(userMessage);
@@ -581,10 +602,10 @@ $toolLines''';
           _buildDisplay(completedTools, '⏹ остановлено', pending: false),
           MessageStatus.done,
         );
-        return;
+        return null;
       }
 
-      debugPrint('[AI] iter=$iter generating… (nCtx=4096 cpu-only)');
+      debugPrint('[AI] iter=$iter generating… (nCtx=8192 cpu-only)');
       final buffer = StringBuffer();
       int tokenCount = 0;
       bool firstToken = true;
@@ -652,7 +673,7 @@ $toolLines''';
               pending: false),
           MessageStatus.done,
         );
-        return;
+        return null;
       }
 
       final rawText = buffer.toString();
@@ -664,12 +685,13 @@ $toolLines''';
 
       if (call == null) {
         // No tool call — this is the final answer.
+        final cleanAnswer = _cleanOutput(displayText);
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, _cleanOutput(displayText), pending: false),
+          _buildDisplay(completedTools, cleanAnswer, pending: false),
           MessageStatus.done,
         );
-        return;
+        return cleanAnswer;
       }
 
       // ── Execute tool ─────────────────────────────────────────────────────
@@ -682,12 +704,13 @@ $toolLines''';
       // name-only sentinel (e.g. after auto-trigger) → treat as final answer.
       if (calledTools.contains(callKey) || calledTools.contains(toolName)) {
         debugPrint('[AI] ⚠️ duplicate tool call detected, stopping loop');
+        final cleanAnswer = _cleanOutput(displayText);
         _updateMessage(
           assistantId,
-          _buildDisplay(completedTools, _cleanOutput(displayText), pending: false),
+          _buildDisplay(completedTools, cleanAnswer, pending: false),
           MessageStatus.done,
         );
-        return;
+        return cleanAnswer;
       }
       calledTools.add(callKey);
 
@@ -750,6 +773,7 @@ $toolLines''';
       _buildDisplay(completedTools, '(превышен лимит итераций)', pending: false),
       MessageStatus.done,
     );
+    return null;
   }
 
   /// Waits up to 3 seconds for the async _rebuildChat to complete.
