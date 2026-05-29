@@ -1,10 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -257,107 +255,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// Looks for ai_assistant_backup.json in common Downloads locations.
-  static File? _findBackupInDownloads() {
-    const candidates = [
-      '/storage/emulated/0/Download/ai_assistant_backup.json',
-      '/storage/emulated/0/Downloads/ai_assistant_backup.json',
-    ];
-    for (final path in candidates) {
-      try {
-        final f = File(path);
-        if (f.existsSync()) return f;
-      } catch (_) {}
-    }
-    return null;
-  }
-
   Future<void> _importSettings() async {
     setState(() => _importing = true);
     try {
-      Uint8List? bytes;
-
-      // ── On Android 11+: MANAGE_EXTERNAL_STORAGE lets us read Downloads ──────
-      // If not yet granted, offer to open system settings before auto-detect.
-      // The permission survives across launches but is reset on app uninstall.
-      if (Platform.isAndroid) {
-        final status = await Permission.manageExternalStorage.status;
-        if (!status.isGranted && mounted) {
-          final wantPermission = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: const Text('Доступ к файлам'),
-              content: const Text(
-                'Для авто-поиска бэкапа в папке Загрузки нужно разрешение '
-                '"Доступ ко всем файлам".\n\n'
-                'Выдайте разрешение в настройках и вернитесь — '
-                'или выберите файл вручную.',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('Выбрать вручную'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('Открыть настройки'),
-                ),
-              ],
-            ),
-          );
-          if (wantPermission == null) {
-            setState(() => _importing = false);
-            return;
-          }
-          if (wantPermission) {
-            await Permission.manageExternalStorage.request();
-          }
-        }
-      }
-
-      // ── Auto-detect: find and read backup from Downloads ─────────────────────
-      final found = _findBackupInDownloads();
-      if (found != null) {
-        try {
-          final data = found.readAsBytesSync();
-          if (mounted) {
-            final confirmed = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                title: const Text('Найден бэкап'),
-                content: Text('Восстановить настройки из\n${found.path}?'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('Отмена'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('Восстановить'),
-                  ),
-                ],
-              ),
-            );
-            if (confirmed == null || confirmed == false) {
-              setState(() => _importing = false);
-              return;
-            }
-            bytes = data;
-          }
-        } catch (_) {
-          // Still denied — fall through to file picker silently.
-        }
-      }
-
-      // ── File picker (if auto-detect failed or no backup found) ───────────────
-      if (bytes == null) {
-        final result = await FilePicker.platform.pickFiles(
-          type: FileType.custom,
-          allowedExtensions: ['json'],
-          withData: true,
-        );
-        bytes = result?.files.single.bytes;
-      }
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+      final bytes = result?.files.single.bytes;
 
       if (bytes == null || !mounted) {
         setState(() => _importing = false);

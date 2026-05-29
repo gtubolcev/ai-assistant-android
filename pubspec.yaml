@@ -43,9 +43,6 @@ dependencies:
   # File picker — lets user browse and select a .gguf model file
   file_picker: ^8.1.4
 
-  # Runtime permission requests (MANAGE_EXTERNAL_STORAGE for Downloads access)
-  permission_handler: ^11.3.1
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
