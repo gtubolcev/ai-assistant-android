@@ -37,9 +37,6 @@ dependencies:
   # MCP client (StreamableHTTP transport, no archive dependency)
   mcp_dart: ^2.1.1
 
-  # Speech recognition via Android SpeechRecognizer / iOS SFSpeechRecognizer
-  speech_to_text: ^7.4.0
-
   # File system paths (getApplicationDocumentsDirectory, getExternalStorageDirectory)
   path_provider: ^2.1.4
 
