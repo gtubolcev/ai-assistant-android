@@ -277,7 +277,7 @@ $toolLines''';
     _engine = await LlamaEngine.spawn(
       libraryPath: 'libllama.so',   // Android uses basename; resolved via AAR
       modelParams: ModelParams(path: path, gpuLayers: 0),  // CPU-only: safer on MediaTek
-      contextParams: const ContextParams(nCtx: 8192, nBatch: 512, nUbatch: 512),
+      contextParams: const ContextParams(nCtx: 4096, nBatch: 512, nUbatch: 512),
     );
 
     isModelReady = true;
@@ -605,7 +605,7 @@ $toolLines''';
         return null;
       }
 
-      debugPrint('[AI] iter=$iter generating… (nCtx=8192 cpu-only)');
+      debugPrint('[AI] iter=$iter generating… (nCtx=4096 cpu-only)');
       final buffer = StringBuffer();
       int tokenCount = 0;
       bool firstToken = true;

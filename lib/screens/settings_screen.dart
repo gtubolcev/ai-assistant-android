@@ -276,42 +276,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       Uint8List? bytes;
 
-      // ── Auto-detect backup in Downloads ─────────────────────────────────────
+      // ── Auto-detect: try reading backup directly from Downloads ──────────────
+      // Works on Android ≤12 with READ_EXTERNAL_STORAGE.
+      // On Android 13+ (scoped storage) readAsBytesSync throws — we fall
+      // through silently to the file picker without bothering the user.
       final found = _findBackupInDownloads();
-      if (found != null && mounted) {
-        final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('Найден бэкап'),
-            content: Text('Восстановить настройки из\n${found.path}?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Выбрать файл'),
+      if (found != null) {
+        try {
+          final data = found.readAsBytesSync();
+          // Read succeeded — ask for confirmation before applying.
+          if (mounted) {
+            final confirmed = await showDialog<bool>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('Найден бэкап'),
+                content: Text('Восстановить настройки из\n${found.path}?'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Отмена'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('Восстановить'),
+                  ),
+                ],
               ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Восстановить'),
-              ),
-            ],
-          ),
-        );
-        if (confirmed == true) {
-          try {
-            bytes = found.readAsBytesSync();
-          } catch (_) {
-            // Permission denied on Android 11+ — fall through to file picker.
+            );
+            if (confirmed == null || confirmed == false) {
+              setState(() => _importing = false);
+              return;
+            }
+            bytes = data;
           }
-        }
-        // confirmed == false → fall through to file picker
-        // confirmed == null (dismissed) → cancel
-        if (confirmed == null) {
-          setState(() => _importing = false);
-          return;
+        } catch (_) {
+          // Scoped storage (Android 13+): direct read denied — use file picker.
         }
       }
 
-      // ── Manual file picker (if no auto-found file or user chose manually) ───
+      // ── File picker ──────────────────────────────────────────────────────────
       if (bytes == null) {
         final result = await FilePicker.platform.pickFiles(
           type: FileType.custom,
