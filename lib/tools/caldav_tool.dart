@@ -79,16 +79,30 @@ class CalDavClient {
     required this.password,
   });
 
-  // Normalise: strip trailing slash, ensure no double-slash in paths
+  // The origin (scheme+host+port) used to build absolute URLs from hrefs.
+  String get _origin {
+    final uri = Uri.parse(serverUrl);
+    final port = uri.hasPort &&
+            !((uri.scheme == 'https' && uri.port == 443) ||
+              (uri.scheme == 'http'  && uri.port == 80))
+        ? ':${uri.port}'
+        : '';
+    return '${uri.scheme}://${uri.host}$port';
+  }
+
+  // DAV base path (without trailing slash).
   String get _base {
     var url = serverUrl.trimRight();
     while (url.endsWith('/')) url = url.substring(0, url.length - 1);
-    // Nextcloud: if URL already ends with /remote.php/dav, keep it; otherwise append
     if (!url.contains('/remote.php/dav') && !url.contains('/dav/')) {
       url = '$url/remote.php/dav';
     }
     return url;
   }
+
+  // Build an absolute URL from an href returned by PROPFIND/REPORT.
+  // hrefs are absolute paths (e.g. /remote.php/dav/calendars/user/cal/).
+  String _hrefUrl(String href) => '$_origin$href';
 
   String get _calendarsBase => '$_base/calendars/$username/';
 
@@ -146,7 +160,7 @@ class CalDavClient {
         '</d:prop></d:set>'
         '</d:mkcol>';
 
-    final req = http.Request('MKCOL', Uri.parse('$serverUrl$href'));
+    final req = http.Request('MKCOL', Uri.parse(_hrefUrl(href)));
     req.headers.addAll(_authHeaders);
     req.body = mkcolBody;
     final res = await http.Response.fromStream(await req.send());
@@ -171,14 +185,14 @@ class CalDavClient {
         '<d:displayname>${_escapeXml(name)}</d:displayname>'
         '</d:prop></d:set></d:propertyupdate>';
 
-    final req = http.Request('PROPPATCH', Uri.parse('$serverUrl$href'));
+    final req = http.Request('PROPPATCH', Uri.parse(_hrefUrl(href)));
     req.headers.addAll(_authHeaders);
     req.body = body;
     await req.send();
   }
 
   Future<String> deleteCalendar(String href) async {
-    final res = await http.delete(Uri.parse('$serverUrl$href'), headers: _authHeaders);
+    final res = await http.delete(Uri.parse(_hrefUrl(href)), headers: _authHeaders);
     return res.statusCode == 204
         ? 'Calendar deleted.'
         : 'Error: HTTP ${res.statusCode}';
@@ -212,7 +226,7 @@ class CalDavClient {
         '</c:comp-filter></c:filter>'
         '</c:calendar-query>';
 
-    final req = http.Request('REPORT', Uri.parse('$serverUrl${calendar.href}'));
+    final req = http.Request('REPORT', Uri.parse(_hrefUrl(calendar.href)));
     req.headers.addAll(_authHeaders);
     req.headers['Depth'] = '1';
     req.body = body;
@@ -329,7 +343,7 @@ class CalDavClient {
         '</c:comp-filter></c:filter>'
         '</c:calendar-query>';
 
-    final req = http.Request('REPORT', Uri.parse('$serverUrl${calendar.href}'));
+    final req = http.Request('REPORT', Uri.parse(_hrefUrl(calendar.href)));
     req.headers.addAll(_authHeaders);
     req.headers['Depth'] = '1';
     req.body = body;
@@ -457,7 +471,7 @@ class CalDavClient {
   // ── Raw ICS fetch (for updates) ─────────────────────────────────────────────
 
   Future<String?> fetchRawIcs(String calendarHref, String uid) async {
-    final url = '$serverUrl${calendarHref}$uid.ics';
+    final url = _hrefUrl('${calendarHref}${uid}.ics');
     final res = await http.get(Uri.parse(url), headers: _authHeaders);
     return res.statusCode == 200 ? res.body : null;
   }
@@ -467,13 +481,13 @@ class CalDavClient {
   Future<bool> _put(String calendarHref, String uid, String ics) async {
     final headers = Map<String, String>.from(_authHeaders);
     headers['Content-Type'] = 'text/calendar; charset=utf-8';
-    final url = '$serverUrl${calendarHref}$uid.ics';
+    final url = _hrefUrl('${calendarHref}${uid}.ics');
     final res = await http.put(Uri.parse(url), headers: headers, body: ics);
     return res.statusCode == 201 || res.statusCode == 204;
   }
 
   Future<String> _delete(String calendarHref, String uid) async {
-    final url = '$serverUrl${calendarHref}$uid.ics';
+    final url = _hrefUrl('${calendarHref}${uid}.ics');
     final res = await http.delete(Uri.parse(url), headers: _authHeaders);
     return res.statusCode == 204 ? 'Deleted.' : 'Error: HTTP ${res.statusCode}';
   }
