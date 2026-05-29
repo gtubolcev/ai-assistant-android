@@ -958,14 +958,18 @@ $toolLines''';
       if (toolName == 'nc_calendar_list_todos') {
         final todos = (json['todos'] as List?) ??
             (json['tasks'] as List?) ?? [];
-        if (todos.isEmpty) return 'No tasks found.';
-        final lines = todos.take(15).map((t) {
+        // Filter out completed/cancelled tasks.
+        final incomplete = todos.where((t) {
+          final s = ((t['status'] as String?) ?? '').toUpperCase();
+          return s != 'COMPLETED' && s != 'CANCELLED';
+        }).toList();
+        if (incomplete.isEmpty) return 'No incomplete tasks found.';
+        final lines = incomplete.take(30).map((t) {
           final title = t['summary'] ?? t['title'] ?? '(no title)';
-          final status = t['status'] ?? '';
-          final due = t['due'] ?? '';
-          return '• $title${due.isNotEmpty ? " (due: $due)" : ""}${status.isNotEmpty ? " [$status]" : ""}';
+          final due = (t['due'] as String?) ?? '';
+          return '• $title${due.isNotEmpty ? " (due: $due)" : ""}';
         }).join('\n');
-        return 'Found ${todos.length} task(s):\n$lines';
+        return 'Found ${incomplete.length} incomplete task(s):\n$lines';
       }
 
       // ── Contacts list ──────────────────────────────────────────────────────
