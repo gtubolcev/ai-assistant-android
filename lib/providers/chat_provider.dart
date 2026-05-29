@@ -544,14 +544,13 @@ $toolLines''';
       calledTools.add('nc_calendar_list_calendars:{}');
       completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_calendars ✓';
 
-      final calIds = _extractCalendarIds(calsResult);
+      final calIds = _filterCalendarIds(_extractCalendars(calsResult), userMessage);
       completedTools.add('🔧 nc_calendar_list_todos…');
       _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
           MessageStatus.sending);
 
       final todoParts = <String>[];
       for (final id in calIds) {
-        if (id.contains('birthday') || id.contains('contact_birthday')) continue;
         final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
         if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
             !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
@@ -710,13 +709,12 @@ $toolLines''';
       // automatically: after the model lists calendars, we call list_todos for
       // each non-birthday calendar and combine results.
       if (toolName == 'nc_calendar_list_calendars' && isTaskQuery) {
-        final calIds = _extractCalendarIds(toolResult);
+        final calIds = _filterCalendarIds(_extractCalendars(toolResult), userMessage);
         completedTools.add('🔧 nc_calendar_list_todos…');
         _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
             MessageStatus.sending);
         final todoParts = <String>[];
         for (final id in calIds) {
-          if (id.contains('birthday') || id.contains('contact_birthday')) continue;
           final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
           if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
               !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
@@ -872,17 +870,39 @@ $toolLines''';
     return _humanizeToolResult(name, raw);
   }
 
-  /// Extracts calendar IDs from a humanized nc_calendar_list_calendars result.
+  /// Extracts (id, displayName) pairs from a humanized list_calendars result.
   ///
   /// Humanized format:
-  ///   "Found N calendar(s):\n• Name (id: calId)\n• ..."
-  static List<String> _extractCalendarIds(String humanized) {
-    final ids = <String>[];
-    final re = RegExp(r'\(id:\s*([^)]+)\)');
+  ///   "Found N calendar(s):\n• DisplayName (id: calId)\n• ..."
+  static List<(String, String)> _extractCalendars(String humanized) {
+    final result = <(String, String)>[];
+    final re = RegExp(r'•\s+(.+?)\s+\(id:\s*([^)]+)\)');
     for (final m in re.allMatches(humanized)) {
-      ids.add(m.group(1)!.trim());
+      result.add((m.group(2)!.trim(), m.group(1)!.trim())); // (id, displayName)
     }
-    return ids;
+    return result;
+  }
+
+  /// Returns calendar IDs to fetch todos from, based on the user message.
+  ///
+  /// If the user mentioned a specific calendar by name or ID, returns only that
+  /// one. Otherwise returns all non-birthday calendars.
+  static List<String> _filterCalendarIds(
+      List<(String, String)> calendars, String userMessage) {
+    final msg = userMessage.toLowerCase();
+    for (final (id, name) in calendars) {
+      final idLow = id.toLowerCase();
+      final nameLow = name.toLowerCase();
+      if (nameLow.length > 2 && msg.contains(nameLow) ||
+          idLow.length > 2 && msg.contains(idLow)) {
+        return [id];
+      }
+    }
+    return calendars
+        .where((c) =>
+            !c.$1.contains('birthday') && !c.$1.contains('contact_birthday'))
+        .map((c) => c.$1)
+        .toList();
   }
 
   /// Converts raw MCP tool results to compact human-readable text.
