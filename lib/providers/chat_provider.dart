@@ -754,9 +754,10 @@ $toolLines''';
       chat.addUser(
         '<tool_result name="$toolName">\n$modelResult\n</tool_result>',
       );
-      // Seed the assistant turn with a neutral opener so the model continues
-      // with prose rather than emitting a JSON tool call.
-      const prefix = 'Here is what I found:';
+      // Seed the assistant turn. For calendar list, force one-per-line format.
+      final prefix = toolName == 'nc_calendar_list_calendars'
+          ? 'Your calendars (one per line):\n'
+          : 'Here is what I found:';
       chat.addAssistant(prefix);
       assistantPrefix = prefix;
     }
