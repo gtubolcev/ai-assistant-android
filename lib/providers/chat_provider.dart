@@ -542,12 +542,6 @@ $toolLines''';
     _chat!.addSystem(_buildSystemPrompt(tools));
     final chat = _chat!;
 
-    // Inject recent conversation history so the model has continuity.
-    for (final turn in _history) {
-      chat.addUser(turn.user);
-      chat.addAssistant(turn.assistant);
-    }
-
     // Add the user message to the engine chat context.
     chat.addUser(userMessage);
 
