@@ -517,11 +517,16 @@ $toolLines''';
     debugPrint('[AI] msg="${userMessage.substring(0, userMessage.length.clamp(0, 60))}" '
         'tools=${tools.map((t) => t['name']).toList()}');
 
-    // Always rebuild chat fresh per message with the filtered tool set.
-    // This keeps the system prompt short (fast prefill) and avoids KV-cache
-    // bloat from earlier conversation turns on a resource-constrained device.
-    await _chat?.dispose();
-    _chat = await _engine!.createChat();
+    // Reuse the same EngineChat across messages — creating a new one every
+    // message causes the native ggml backend scheduler to enter an invalid
+    // state (use-after-free, visible as pc=0xff80000000000000 / deadpool).
+    // clearHistory() resets the Dart-side message list; the worker always
+    // calls session.clear() + session.appendText(fullPrompt) at generate
+    // time anyway, so the KV cache is fully re-prefilled from scratch.
+    if (_chat == null) {
+      _chat = await _engine!.createChat();
+    }
+    _chat!.clearHistory();
     _chat!.addSystem(_buildSystemPrompt(tools));
     final chat = _chat!;
 
@@ -569,11 +574,6 @@ $toolLines''';
       const taskPrefix = 'Here are your tasks:';
       chat.addAssistant(taskPrefix);
       assistantPrefix = taskPrefix;
-    } else {
-      // For non-task queries the assistant turn hasn't been opened yet.
-      // llama_cpp_dart requires addAssistant() before the first generate()
-      // call — without it, the chat template is malformed and causes SIGSEGV.
-      chat.addAssistant('');
     }
 
     for (int iter = 0; iter < maxIterations; iter++) {
