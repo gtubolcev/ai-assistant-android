@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
+import '../tools/caldav_tool.dart';
 import '../tools/mcp_bridge.dart';
 import '../tools/web_fetch_tool.dart';
 
@@ -37,6 +38,7 @@ class ChatProvider extends ChangeNotifier {
   LlamaEngine? _engine;
   EngineChat? _chat;
   McpBridge? _mcp;
+  CalDavExecutor? _caldav;
   bool _stopRequested = false;
   String _activeModelPath = '';
 
@@ -59,9 +61,10 @@ class ChatProvider extends ChangeNotifier {
 
   // ── Tool helpers ──────────────────────────────────────────────────────────
 
-  /// All available tools: web_fetch + MCP tools.
+  /// All available tools: web_fetch + CalDAV tools (+ MCP if connected).
   List<Map<String, dynamic>> get _allTools => [
         webFetchToolDef,
+        if (_caldav != null) ...calDavToolDefs,
         ...(_mcp?.tools ?? []),
       ];
 
@@ -79,102 +82,80 @@ class ChatProvider extends ChangeNotifier {
     // ── Web ──────────────────────────────────────────────────────────────────
     if (_kw(m, ['http://', 'https://'])) return [webFetchToolDef];
 
-    // ── Calendar: list which calendars exist ─────────────────────────────────
+    // ── Calendars list ───────────────────────────────────────────────────────
     if (_kw(m, ['list calendar', 'show calendar', 'what calendar',
                  'список календар', 'покажи календар'])) {
-      return pick(['nc_calendar_list_calendars']);
+      return pick(['list_calendars']);
     }
 
-    // ── Calendar: upcoming events / agenda ───────────────────────────────────
+    // ── Events / agenda ──────────────────────────────────────────────────────
     if (_kw(m, [
-      'list event', 'show event', 'upcoming event', 'upcoming meeting',
-      'what event', 'what meeting', 'my event', 'my meeting',
-      "what's on", "what is on", 'agenda', 'schedule',
+      'list event', 'show event', 'upcoming event', 'agenda', 'schedule',
+      'what event', "what's on", 'event today', 'event tomorrow',
       'список событий', 'покажи события', 'что запланировано',
-      'что сегодня', 'что завтра', 'что на неделе',
-      'today', 'tomorrow', 'this week', 'next week',
-      'сегодня', 'завтра', 'на неделе', 'расписани',
+      'что сегодня', 'что завтра', 'что на неделе', 'расписани',
+      'today', 'tomorrow', 'this week', 'next week', 'this month',
+      'сегодня', 'завтра', 'на неделе', 'на месяц', 'на год',
     ])) {
-      return pick(['nc_calendar_get_upcoming_events', 'nc_calendar_list_events']);
+      return pick(['list_events']);
     }
 
-    // ── Calendar: create event ───────────────────────────────────────────────
+    // ── Create event ─────────────────────────────────────────────────────────
     if (_kw(m, [
       'create event', 'add event', 'new event', 'schedule meeting',
-      'создай событие', 'добавь событие', 'запланируй', 'встречу',
+      'создай событие', 'добавь событие', 'запланируй встречу',
     ])) {
-      return pick(['nc_calendar_create_event']);
+      return pick(['create_event']);
     }
 
-    // ── Tasks / todos ────────────────────────────────────────────────────────
+    // ── Tasks: list ──────────────────────────────────────────────────────────
     if (_kw(m, [
       'list task', 'show task', 'my task', 'list todo', 'show todo',
       'список задач', 'покажи задачи', 'мои задачи',
     ])) {
-      // Only give list_calendars — LFM2-1.2B ignores multi-step instructions
-      // and skips straight to list_todos with a made-up calendar name.
-      // The agent loop auto-calls list_todos after list_calendars returns.
-      return pick(['nc_calendar_list_calendars']);
+      return pick(['list_tasks']);
     }
 
+    // ── Tasks: create ────────────────────────────────────────────────────────
     if (_kw(m, [
       'create task', 'add task', 'new task', 'create todo', 'add todo',
-      'создай задачу', 'добавь задачу',
+      'создай задачу', 'добавь задачу', 'новая задача',
     ])) {
-      return pick(['nc_calendar_create_todo']);
+      return pick(['create_task']);
     }
 
-    // ── Calendar (generic — anything with 'calendar', 'event', 'meeting') ───
-    if (_kw(m, ['calendar', 'event', 'meeting', 'appointment', 'remind',
-                 'task', 'todo', 'deadline',
+    // ── Tasks: complete / update / delete ────────────────────────────────────
+    if (_kw(m, ['complete task', 'finish task', 'mark done', 'mark as done',
+                 'выполнить задачу', 'завершить задачу', 'отметить выполненной'])) {
+      return pick(['complete_task']);
+    }
+    if (_kw(m, ['update task', 'edit task', 'change task', 'rename task',
+                 'обновить задачу', 'изменить задачу'])) {
+      return pick(['update_task']);
+    }
+    if (_kw(m, ['delete task', 'remove task', 'удалить задачу'])) {
+      return pick(['delete_task']);
+    }
+
+    // ── Generic calendar/task/event ──────────────────────────────────────────
+    if (_kw(m, ['calendar', 'event', 'meeting', 'appointment',
+                 'task', 'todo', 'deadline', 'remind',
                  'календар', 'событи', 'встреч', 'напомн',
                  'задач', 'дедлайн', 'план'])) {
-      return pick([
-        'nc_calendar_get_upcoming_events',
-        'nc_calendar_create_event',
-        'nc_calendar_list_todos',
-        'nc_calendar_create_todo',
-        'nc_calendar_list_calendars',
-      ]);
+      return pick(['list_tasks', 'list_events', 'create_task', 'create_event']);
     }
 
-    // ── Contacts ─────────────────────────────────────────────────────────────
-    if (_kw(m, ['contact', 'phone number', 'контакт', 'телефон', 'адресн'])) {
-      return pick([
-        'nc_contacts_list_contacts',
-        'nc_contacts_get_contact',
-        'nc_contacts_create_contact',
-      ]);
+    // ── MCP tools (if connected) ─────────────────────────────────────────────
+    if (_mcp != null) {
+      if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
+        return pick(['nc_notes_list_notes', 'nc_notes_create_note', 'nc_notes_get_note']);
+      }
+      if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
+        return pick(['nc_files_list_files', 'nc_files_upload_file']);
+      }
     }
 
-    // ── Notes ────────────────────────────────────────────────────────────────
-    if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
-      return pick([
-        'nc_notes_list_notes',
-        'nc_notes_create_note',
-        'nc_notes_get_note',
-      ]);
-    }
-
-    // ── Files ────────────────────────────────────────────────────────────────
-    if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
-      return pick([
-        'nc_files_list_files',
-        'nc_files_upload_file',
-        'nc_files_get_file_info',
-      ]);
-    }
-
-    // ── Kanban ───────────────────────────────────────────────────────────────
-    if (_kw(m, ['deck', 'board', 'kanban', 'card', 'борд', 'канбан'])) {
-      return pick([
-        'nc_deck_list_boards',
-        'nc_deck_create_card',
-        'nc_deck_list_cards',
-      ]);
-    }
-
-    // ── Default: no tools → conversational response ──────────────────────────
+    // ── Default: conversational ──────────────────────────────────────────────
     return [];
   }
 
@@ -229,7 +210,6 @@ Do NOT use <think> tags. Answer concisely in the same language as the user.
 3. Output EXACTLY one JSON line when calling a tool, nothing before or after:
 {"tool":"tool_name","arguments":{"key":"value"}}
 4. After receiving a <tool_result>, present the data to the user in a clear, friendly format. NEVER say the tool failed unless the result contains an explicit error. NEVER call the same tool again with the same arguments.
-5. For nc_calendar_list_todos: ALWAYS call nc_calendar_list_calendars FIRST to get the exact calendar name, then use that exact name in nc_calendar_list_todos. NEVER guess a calendar name.
 
 ## Available tools
 $toolLines''';
@@ -245,21 +225,39 @@ $toolLines''';
       final prefs = await SharedPreferences.getInstance();
       _activeModelPath = prefs.getString(_kModelPathKey) ?? '';
 
+      // Initialise CalDAV client from saved settings.
+      await _initCalDav(prefs);
+
       if (_activeModelPath.isEmpty ||
           !File(_activeModelPath).existsSync()) {
-        statusText = 'Выберите модель в Настройках';
+        statusText = _caldav != null
+            ? 'Выберите модель в Настройках'
+            : 'Выберите модель и настройте CalDAV';
         notifyListeners();
-        await _connectMcp();
         return;
       }
 
       await _loadEngine(_activeModelPath);
-      await _connectMcp();
     } catch (e) {
       errorText = 'Ошибка инициализации: $e';
       statusText = 'Ошибка';
       notifyListeners();
     }
+  }
+
+  Future<void> _initCalDav(SharedPreferences prefs) async {
+    final url = prefs.getString('caldav_url') ?? '';
+    final user = prefs.getString('caldav_user') ?? '';
+    final pass = prefs.getString('caldav_password') ?? '';
+    if (url.isEmpty || user.isEmpty) {
+      _caldav = null;
+      return;
+    }
+    _caldav = CalDavExecutor(CalDavClient(
+      serverUrl: url,
+      username: user,
+      password: pass,
+    ));
   }
 
   /// Spawns LlamaEngine and marks model as ready.
@@ -456,6 +454,8 @@ $toolLines''';
     await prefs.setString('caldav_url', url.trim());
     await prefs.setString('caldav_user', user.trim());
     await prefs.setString('caldav_password', password);
+    await _initCalDav(prefs);
+    notifyListeners();
   }
 
   // ── Send message ──────────────────────────────────────────────────────────
@@ -507,28 +507,12 @@ $toolLines''';
     const maxIterations = 5;
     // Track (toolName, argsJson) to detect identical repeated calls.
     final calledTools = <String>{};
-    // Prefix injected as a partial assistant message after a tool result,
-    // to steer the model into producing text rather than another JSON call.
     String assistantPrefix = '';
-    // Whether this request originally asked for tasks/todos.
-    // Used to auto-call list_todos after list_calendars returns.
-    final isTaskQuery = _kw(userMessage.toLowerCase(), [
-      'list task', 'show task', 'my task', 'list todo', 'show todo',
-      'список задач', 'покажи задачи', 'мои задачи',
-    ]);
 
-    // Select only the tools relevant to this message — keeps the system
-    // prompt small so prefill stays fast on a phone CPU.
     final tools = _toolsForMessage(userMessage);
     debugPrint('[AI] msg="${userMessage.substring(0, userMessage.length.clamp(0, 60))}" '
         'tools=${tools.map((t) => t['name']).toList()}');
 
-    // Reuse the same EngineChat across messages — creating a new one every
-    // message causes the native ggml backend scheduler to enter an invalid
-    // state (use-after-free, visible as pc=0xff80000000000000 / deadpool).
-    // clearHistory() resets the Dart-side message list; the worker always
-    // calls session.clear() + session.appendText(fullPrompt) at generate
-    // time anyway, so the KV cache is fully re-prefilled from scratch.
     if (_chat == null) {
       _chat = await _engine!.createChat();
     }
@@ -536,51 +520,7 @@ $toolLines''';
     _chat!.addSystem(_buildSystemPrompt(tools));
     final chat = _chat!;
 
-    // Add the user message to the engine chat context.
     chat.addUser(userMessage);
-
-    // ── Auto-trigger: task queries bypass model tool-call decision ───────────
-    // LFM2-1.2B is too small to reliably call tools for multi-step tasks.
-    // For task/todo queries we call nc_calendar_list_calendars ourselves,
-    // then cascade to nc_calendar_list_todos, and feed the combined result
-    // directly into the chat so the model only needs to format it.
-    if (isTaskQuery) {
-      completedTools.add('🔧 nc_calendar_list_calendars…');
-      _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
-          MessageStatus.sending);
-
-      final calsResult = await _executeTool('nc_calendar_list_calendars', {});
-      calledTools.add('nc_calendar_list_calendars:{}');
-      completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_calendars ✓';
-
-      final calIds = _filterCalendarIds(_extractCalendars(calsResult), userMessage);
-      completedTools.add('🔧 nc_calendar_list_todos…');
-      _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
-          MessageStatus.sending);
-
-      final todoParts = <String>[];
-      for (final id in calIds) {
-        final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
-        if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
-            !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
-          todoParts.add(todos);
-        }
-      }
-      final combined = todoParts.isEmpty ? 'No tasks found in any calendar.' : todoParts.join('\n');
-      // Block these tools by name-only sentinel so the model can't re-call them
-      // with any argument variation (model tends to re-call with {key:calendars}).
-      calledTools.add('nc_calendar_list_todos');
-      calledTools.add('nc_calendar_list_calendars');
-      completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_todos ✓';
-
-      chat.addUser('<tool_result name="nc_calendar_list_todos">\n$combined\n</tool_result>');
-      // Add an explicit summarize instruction so the model produces prose, not JSON.
-      chat.addUser('Summarize the tasks above in a clear, human-readable list. '
-          'Do not use JSON. Do not call any tools. Just list the tasks.');
-      const taskPrefix = 'Here are your tasks:';
-      chat.addAssistant(taskPrefix);
-      assistantPrefix = taskPrefix;
-    }
 
     for (int iter = 0; iter < maxIterations; iter++) {
       if (_stopRequested) {
@@ -715,45 +655,15 @@ $toolLines''';
 
       completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
 
-      // ── Calendar list: output directly, don't let model re-format ───────────
-      // The 1.2B model loops on nc_calendar_list_calendars — after seeing the
-      // tool result it calls the tool again instead of presenting the list.
-      // Just strip IDs and return the formatted result directly.
-      if (toolName == 'nc_calendar_list_calendars' && !isTaskQuery) {
-        final display = toolResult.replaceAll(RegExp(r' \(id: [^)]+\)'), '');
-        final cleanAnswer = _cleanOutput(display);
+      // CalDAV tools return pre-formatted output — show directly without model.
+      if (CalDavExecutor.handles(toolName)) {
+        final cleanAnswer = _cleanOutput(toolResult);
         _updateMessage(
           assistantId,
           _buildDisplay(completedTools, cleanAnswer, pending: false),
           MessageStatus.done,
         );
         return cleanAnswer;
-      }
-
-      // ── Auto-cascade: list_calendars → list_todos for task queries ──────────
-      if (toolName == 'nc_calendar_list_calendars' && isTaskQuery) {
-        final calIds = _filterCalendarIds(_extractCalendars(toolResult), userMessage);
-        completedTools.add('🔧 nc_calendar_list_todos…');
-        _updateMessage(assistantId, _buildDisplay(completedTools, '', pending: true),
-            MessageStatus.sending);
-        final todoParts = <String>[];
-        for (final id in calIds) {
-          final todos = await _executeTool('nc_calendar_list_todos', {'calendar_name': id});
-          if (!todos.startsWith('No tasks') && !todos.startsWith('Error') &&
-              !todos.startsWith('Ошибка') && !todos.startsWith('MCP')) {
-            todoParts.add(todos);
-          }
-        }
-        final combined = todoParts.isEmpty ? 'No tasks found in any calendar.' : todoParts.join('\n');
-        completedTools[completedTools.length - 1] = '🔧 nc_calendar_list_todos ✓';
-        calledTools.add('nc_calendar_list_todos:{}'); // prevent model from re-calling
-
-        // Feed combined todos to model for presentation.
-        chat.addUser('<tool_result name="nc_calendar_list_todos">\n$combined\n</tool_result>');
-        const prefix = 'Here is what I found:';
-        chat.addAssistant(prefix);
-        assistantPrefix = prefix;
-        continue; // let model generate the final text answer
       }
 
       // Feed result, then add a partial assistant prefix so the model
@@ -866,67 +776,29 @@ $toolLines''';
 
   Future<String> _executeTool(
       String name, Map<String, dynamic> args) async {
-    if (name == 'web_fetch') {
-      return executeWebFetch(args);
+    if (name == 'web_fetch') return executeWebFetch(args);
+
+    // CalDAV tools (our own implementation — returns pre-formatted strings).
+    final caldav = _caldav;
+    if (caldav != null && CalDavExecutor.handles(name)) {
+      return caldav.execute(name, args);
     }
+
+    // MCP fallback for other tools (notes, files, etc.).
     final mcp = _mcp;
     if (mcp == null || !mcp.isConnected) {
-      return 'MCP недоступен. Проверь настройки сервера.';
+      return 'Инструмент "$name" недоступен. Проверь настройки.';
     }
     final raw = await mcp.executeTool(name, args);
     return _humanizeToolResult(name, raw);
   }
 
-  /// Extracts (id, displayName) pairs from a humanized list_calendars result.
-  ///
-  /// Humanized format:
-  ///   "Found N calendar(s):\n• DisplayName (id: calId)\n• ..."
-  static List<(String, String)> _extractCalendars(String humanized) {
-    final result = <(String, String)>[];
-    final re = RegExp(r'•\s+(.+?)\s+\(id:\s*([^)]+)\)');
-    for (final m in re.allMatches(humanized)) {
-      result.add((m.group(2)!.trim(), m.group(1)!.trim())); // (id, displayName)
-    }
-    return result;
-  }
-
-  /// Returns calendar IDs to fetch todos from, based on the user message.
-  ///
-  /// If the user mentioned a specific calendar by name or ID, returns only that
-  /// one. Otherwise returns all non-birthday calendars.
-  static List<String> _filterCalendarIds(
-      List<(String, String)> calendars, String userMessage) {
-    final msg = userMessage.toLowerCase();
-    for (final (id, name) in calendars) {
-      final idLow = id.toLowerCase();
-      final nameLow = name.toLowerCase();
-      if (nameLow.length > 2 && msg.contains(nameLow) ||
-          idLow.length > 2 && msg.contains(idLow)) {
-        return [id];
-      }
-    }
-    return calendars
-        .where((c) =>
-            !c.$1.contains('birthday') && !c.$1.contains('contact_birthday'))
-        .map((c) => c.$1)
-        .toList();
-  }
-
-  /// Converts raw MCP tool results to compact human-readable text.
-  ///
-  /// Small models like LFM2-1.2B cannot summarize large JSON — they echo it
-  /// verbatim. This method pre-formats the data so the model only needs to
-  /// repeat a short, structured description.
+  /// Converts raw MCP tool results to compact human-readable text for the model.
   static String _humanizeToolResult(String toolName, String raw) {
-    // Don't touch explicit errors.
-    if (raw.startsWith('Error') || raw.startsWith('Ошибка') ||
-        raw.startsWith('MCP')) {
+    if (raw.startsWith('Error') || raw.startsWith('Ошибка') || raw.startsWith('MCP')) {
       return raw;
     }
-
     try {
-      // Strip markdown code fences that some MCP servers wrap around JSON
-      // (e.g. ```json\n{...}\n```).
       String src = raw.trim();
       if (src.startsWith('```')) {
         final nl = src.indexOf('\n');
@@ -935,80 +807,14 @@ $toolLines''';
       }
       final json = jsonDecode(src);
 
-      // ── Calendar list ──────────────────────────────────────────────────────
-      if (toolName == 'nc_calendar_list_calendars') {
-        final cals = (json['calendars'] as List?) ?? [];
-        if (cals.isEmpty) return 'No calendars found.';
-        final lines = cals.map((c) {
-          final displayName = c['display_name'] ?? c['name'] ?? '?';
-          // Prefer 'name' (CalDAV collection slug, used by nc_calendar_list_todos).
-          // Fall back to last segment of href if 'name' is absent.
-          final id = (c['name'] as String?)?.isNotEmpty == true
-              ? c['name'] as String
-              : (c['href'] as String? ?? '').split('/').where((s) => s.isNotEmpty).last;
-          return '• $displayName (id: $id)';
-        }).join('\n');
-        return 'Found ${cals.length} calendar(s):\n$lines';
-      }
-
-      // ── Upcoming events ────────────────────────────────────────────────────
-      if (toolName == 'nc_calendar_get_upcoming_events' ||
-          toolName == 'nc_calendar_list_events') {
-        final events = (json['events'] as List?) ?? [];
-        if (events.isEmpty) return 'No upcoming events found.';
-        final lines = events.take(10).map((e) {
-          final title = e['summary'] ?? e['title'] ?? '(no title)';
-          final start = e['start'] ?? e['dtstart'] ?? '';
-          return '• $title — $start';
-        }).join('\n');
-        return 'Found ${events.length} event(s):\n$lines';
-      }
-
-      // ── Todo / task list ───────────────────────────────────────────────────
-      if (toolName == 'nc_calendar_list_todos') {
-        final todos = (json['todos'] as List?) ??
-            (json['tasks'] as List?) ?? [];
-        // Filter out completed/cancelled tasks.
-        final incomplete = todos.where((t) {
-          final s = ((t['status'] as String?) ?? '').toUpperCase();
-          return s != 'COMPLETED' && s != 'CANCELLED';
-        }).toList();
-        if (incomplete.isEmpty) return 'No incomplete tasks found.';
-        final lines = incomplete.take(30).map((t) {
-          final title = t['summary'] ?? t['title'] ?? '(no title)';
-          final due = (t['due'] as String?) ?? '';
-          return '• $title${due.isNotEmpty ? " (due: $due)" : ""}';
-        }).join('\n');
-        return 'Found ${incomplete.length} incomplete task(s):\n$lines';
-      }
-
-      // ── Contacts list ──────────────────────────────────────────────────────
-      if (toolName == 'nc_contacts_list_contacts') {
-        final contacts = (json['contacts'] as List?) ?? [];
-        if (contacts.isEmpty) return 'No contacts found.';
-        final lines = contacts.take(15).map((c) {
-          final name = c['display_name'] ?? c['fn'] ?? '?';
-          final phone = (c['phones'] as List?)?.first?['value'] ?? '';
-          return '• $name${phone.isNotEmpty ? " — $phone" : ""}';
-        }).join('\n');
-        return 'Found ${contacts.length} contact(s):\n$lines';
-      }
-
-      // ── Notes list ─────────────────────────────────────────────────────────
       if (toolName == 'nc_notes_list_notes') {
         final notes = (json['notes'] as List?) ?? [];
         if (notes.isEmpty) return 'No notes found.';
-        final lines = notes.take(10).map((n) {
-          final title = n['title'] ?? n['name'] ?? '(untitled)';
-          return '• $title';
-        }).join('\n');
-        return 'Found ${notes.length} note(s):\n$lines';
+        return 'Found ${notes.length} note(s):\n'
+            '${notes.take(10).map((n) => '• ${n['title'] ?? '(untitled)'}').join('\n')}';
       }
 
-      // ── Generic: if result is short enough, pass as-is; otherwise summarize top fields ──
       if (raw.length <= 400) return raw;
-
-      // For large unknown responses: extract top-level non-nested fields only.
       if (json is Map) {
         final summary = json.entries
             .where((e) => e.value is! Map && e.value is! List)
@@ -1017,11 +823,7 @@ $toolLines''';
             .join('\n');
         return summary.isNotEmpty ? summary : raw.substring(0, 400);
       }
-    } catch (_) {
-      // Not JSON — pass through, truncated.
-    }
-
-    // Fallback: truncate to 400 chars.
+    } catch (_) {}
     return raw.length > 400 ? '${raw.substring(0, 400)}\n[...]' : raw;
   }
 

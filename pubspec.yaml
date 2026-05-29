@@ -19,6 +19,9 @@ dependencies:
   # HTTP for web fetch tool and CalDAV
   http: ^1.2.1
 
+  # XML parsing for CalDAV PROPFIND/REPORT responses
+  xml: ^6.5.0
+
   # Markdown rendering for assistant responses
   flutter_markdown: ^0.7.3
 
