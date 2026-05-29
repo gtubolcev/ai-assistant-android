@@ -47,6 +47,6 @@ flutter {
 
 dependencies {
     // Prebuilt llama.cpp native library for Android (arm64-v8a, armeabi-v7a, x86_64)
-    // Downloaded from: https://github.com/netdur/llama_cpp_dart/releases/tag/v0.9.0-dev.6
+    // Downloaded from: https://github.com/netdur/llama_cpp_dart/releases/tag/v0.9.0-dev.7
     implementation fileTree(dir: 'libs', include: ['*.aar'])
 }

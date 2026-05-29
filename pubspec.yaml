@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
 
   # On-device LLM inference (llama_cpp_dart — GGUF via llama.cpp, prebuilt AAR)
-  llama_cpp_dart: ^0.9.0-dev.6
+  llama_cpp_dart: ^0.9.0-dev.7
 
   # State management
   provider: ^6.1.2
