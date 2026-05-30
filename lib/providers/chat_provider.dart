@@ -186,9 +186,9 @@ class ChatProvider extends ChangeNotifier {
       final name = t['name'] as String? ?? '?';
       final rawDesc = t['description'] as String? ?? '';
       final desc = rawDesc.split(RegExp(r'[.\n]')).first.trim();
-      final schema = t['inputSchema'] as Map<String, dynamic>?
-          ?? t['parameters'] as Map<String, dynamic>?;
-      final props = schema?['properties'] as Map<String, dynamic>? ?? {};
+      final schema = (t['inputSchema'] as Map?)?.cast<String, dynamic>()
+          ?? (t['parameters'] as Map?)?.cast<String, dynamic>();
+      final props = (schema?['properties'] as Map?)?.cast<String, dynamic>() ?? {};
       final required = (schema?['required'] as List?)?.cast<String>() ?? [];
       final params = props.entries.map((e) {
         final type = (e.value as Map?)?['type'] as String? ?? 'any';
