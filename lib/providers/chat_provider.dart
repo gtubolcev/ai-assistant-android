@@ -200,16 +200,33 @@ class ChatProvider extends ChangeNotifier {
           : '- $name($params)';
     }).join('\n');
 
-    return '''You are a helpful AI assistant. /no_think
+    return '''You are a helpful AI assistant with access to calendar and task tools. /no_think
 Current date and time: $dateStr
 Do NOT use <think> tags. Answer concisely in the same language as the user.
 
-## Tool use rules
-1. Call a tool ONLY when you need live data (calendar, contacts, files, etc.).
-2. For greetings, general knowledge, or questions you can answer directly — do NOT call any tool.
-3. Output EXACTLY one JSON line when calling a tool, nothing before or after:
-{"tool":"tool_name","arguments":{"key":"value"}}
-4. After receiving a <tool_result>, present the data to the user in a clear, friendly format. NEVER say the tool failed unless the result contains an explicit error. NEVER call the same tool again with the same arguments.
+## Tool call format
+When you need to call a tool, output ONLY this JSON — nothing before or after:
+{"tool":"EXACT_TOOL_NAME","arguments":{"key":"value"}}
+Use EXACTLY the tool name from the list below. Never invent or modify tool names.
+For tools with no arguments use: {"tool":"EXACT_TOOL_NAME","arguments":{}}
+
+## Examples
+User: show my calendars
+Assistant: {"tool":"list_calendars","arguments":{}}
+
+User: what tasks do I have?
+Assistant: {"tool":"list_tasks","arguments":{}}
+
+User: list tasks for this week
+Assistant: {"tool":"list_tasks","arguments":{"from":"$dateStr"}}
+
+User: what events are coming up?
+Assistant: {"tool":"list_events","arguments":{}}
+
+## Rules
+1. Call a tool ONLY for live data (calendar, tasks, contacts). For general questions answer directly.
+2. After <tool_result>, summarize the result for the user. NEVER call the same tool+args twice.
+3. If the user asks about calendars → list_calendars. If about tasks → list_tasks. If about events → list_events.
 
 ## Available tools
 $toolLines''';
