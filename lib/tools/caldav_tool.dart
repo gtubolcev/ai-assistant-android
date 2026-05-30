@@ -151,7 +151,8 @@ class CalDavClient {
 
   Future<String> createCalendar(String name) async {
     final id = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-|-$'), '');
-    final href = '$_calendarsBase$id/';
+    // href is an absolute path (no scheme/host) so _hrefUrl() works correctly.
+    final href = '/remote.php/dav/calendars/$username/$id/';
 
     const mkcolBody = '<?xml version="1.0" encoding="utf-8"?>'
         '<d:mkcol xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
