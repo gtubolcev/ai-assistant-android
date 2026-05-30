@@ -8,10 +8,7 @@
 /// server is unreachable (e.g. in CI without external network access).
 library;
 
-import 'dart:convert';
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
 import 'package:ai_assistant/tools/caldav_tool.dart';
 
 // ── Credentials ───────────────────────────────────────────────────────────────
@@ -39,16 +36,11 @@ void _t(String name, Future<void> Function() body) {
 
 Future<bool> _checkReachable() async {
   try {
-    // Do an actual HTTP OPTIONS to verify the server responds, not just DNS.
-    final req = http.Request(
-        'OPTIONS',
-        Uri.parse('$_kServer/remote.php/dav/calendars/$_kUser/'))
-      ..headers['Authorization'] =
-          'Basic ${base64Encode(utf8.encode('$_kUser:$_kPass'))}';
-    final res = await http.Response.fromStream(
-            await req.send().timeout(const Duration(seconds: 8)))
+    // Verify the full CalDAV stack works end-to-end, not just DNS/TCP.
+    final cals = await _client()
+        .listCalendars()
         .timeout(const Duration(seconds: 10));
-    return res.statusCode < 500;
+    return cals.isNotEmpty;
   } catch (_) {
     return false;
   }
