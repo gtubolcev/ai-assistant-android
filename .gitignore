@@ -36,3 +36,9 @@ _tmp/
 
 # Claude Code session files
 .claude/scheduled_tasks.lock
+
+# Local Android SDK (kept inside project, not committed)
+.android-sdk/
+
+# Native CMake build cache
+android/app/.cxx/

@@ -73,6 +73,17 @@ class ChatProvider extends ChangeNotifier {
   /// Strategy: narrow sets prevent the model from picking the wrong tool.
   /// The model sees only 1-3 tools and picks from those; the less choice,
   /// the less hallucination. Default = no tools (conversational).
+  /// Test-only: exercises the keyword/fuzzy router. Seeds an offline CalDAV
+  /// executor so calendar/task/event tool defs are available for matching
+  /// (the constructor performs no network I/O).
+  @visibleForTesting
+  List<Map<String, dynamic>> debugToolsForMessage(String userMessage) {
+    _caldav ??= CalDavExecutor(
+      CalDavClient(serverUrl: 'https://example.test', username: 'u', password: 'p'),
+    );
+    return _toolsForMessage(userMessage);
+  }
+
   List<Map<String, dynamic>> _toolsForMessage(String userMessage) {
     final m = userMessage.toLowerCase();
     final byName = {for (final t in _allTools) t['name'] as String: t};
@@ -82,75 +93,72 @@ class ChatProvider extends ChangeNotifier {
     // ── Web ──────────────────────────────────────────────────────────────────
     if (_kw(m, ['http://', 'https://'])) return [webFetchToolDef];
 
-    // ── Calendars list ───────────────────────────────────────────────────────
-    if (_kw(m, ['list calendar', 'show calendar', 'what calendar',
-                 'список календар', 'покажи календар'])) {
+    // ── Concept detection ──────────────────────────────────────────────────
+    // Token-level, typo-tolerant (edit distance ≤1), stem/prefix based — so
+    // word order and small misspellings still match. "show me calendars",
+    // "calenders", "my calendar" all route to list_calendars.
+    final calendar = _hasConcept(m,
+        ['calendar', 'calendars', 'календарь', 'календари', 'календар']);
+    final task = _hasConcept(m,
+        ['task', 'tasks', 'todo', 'todos', 'задача', 'задачи', 'задач']);
+    final event = _hasConcept(m, [
+      'event', 'events', 'meeting', 'meetings', 'appointment', 'appointments',
+      'событие', 'события', 'событий', 'встреча', 'встречи', 'встречу',
+    ]);
+    final agenda = _hasConcept(m, [
+      'agenda', 'schedule', 'today', 'tomorrow', 'upcoming',
+      'расписание', 'сегодня', 'завтра', 'неделя', 'неделю', 'неделе',
+    ]);
+
+    final createVerb = _hasConcept(m, [
+      'create', 'add', 'new', 'make', 'schedule',
+      'создай', 'создать', 'добавь', 'добавить', 'новая', 'новый', 'новое',
+    ]);
+    final completeVerb = _hasConcept(m, [
+      'complete', 'finish', 'done', 'выполни', 'выполнить', 'заверши', 'завершить',
+    ]);
+    final updateVerb = _hasConcept(m, [
+      'update', 'edit', 'change', 'rename',
+      'обнови', 'обновить', 'измени', 'изменить', 'переименуй', 'переименовать',
+    ]);
+    final deleteVerb = _hasConcept(m, ['delete', 'remove', 'удали', 'удалить']);
+
+    // ── Calendars (collection-level) ─────────────────────────────────────────
+    if (calendar && !task && !event) {
+      if (createVerb) return pick(['create_calendar']);
+      if (deleteVerb) return pick(['delete_calendar']);
+      if (updateVerb) return pick(['rename_calendar']);
+      // "what's on my calendar today/this week" → events, not the calendar list
+      if (agenda) return pick(['list_events']);
       return pick(['list_calendars']);
     }
 
-    // ── Events / agenda ──────────────────────────────────────────────────────
-    if (_kw(m, [
-      'list event', 'show event', 'upcoming event', 'agenda', 'schedule',
-      'what event', "what's on", 'event today', 'event tomorrow',
-      'список событий', 'покажи события', 'что запланировано',
-      'что сегодня', 'что завтра', 'что на неделе', 'расписани',
-      'today', 'tomorrow', 'this week', 'next week', 'this month',
-      'сегодня', 'завтра', 'на неделе', 'на месяц', 'на год',
-    ])) {
-      return pick(['list_events']);
-    }
-
-    // ── Create event ─────────────────────────────────────────────────────────
-    if (_kw(m, [
-      'create event', 'add event', 'new event', 'schedule meeting',
-      'создай событие', 'добавь событие', 'запланируй встречу',
-    ])) {
-      return pick(['create_event']);
-    }
-
-    // ── Tasks: list ──────────────────────────────────────────────────────────
-    if (_kw(m, [
-      'list task', 'show task', 'my task', 'list todo', 'show todo',
-      'список задач', 'покажи задачи', 'мои задачи',
-    ])) {
+    // ── Tasks ────────────────────────────────────────────────────────────────
+    if (task) {
+      if (createVerb) return pick(['create_task']);
+      if (completeVerb) return pick(['complete_task']);
+      if (updateVerb) return pick(['update_task']);
+      if (deleteVerb) return pick(['delete_task']);
       return pick(['list_tasks']);
     }
 
-    // ── Tasks: create ────────────────────────────────────────────────────────
-    if (_kw(m, [
-      'create task', 'add task', 'new task', 'create todo', 'add todo',
-      'создай задачу', 'добавь задачу', 'новая задача',
-    ])) {
-      return pick(['create_task']);
+    // ── Events ───────────────────────────────────────────────────────────────
+    if (event) {
+      if (createVerb) return pick(['create_event']);
+      if (updateVerb) return pick(['update_event']);
+      if (deleteVerb) return pick(['delete_event']);
+      return pick(['list_events']);
     }
 
-    // ── Tasks: complete / update / delete ────────────────────────────────────
-    if (_kw(m, ['complete task', 'finish task', 'mark done', 'mark as done',
-                 'выполнить задачу', 'завершить задачу', 'отметить выполненной'])) {
-      return pick(['complete_task']);
-    }
-    if (_kw(m, ['update task', 'edit task', 'change task', 'rename task',
-                 'обновить задачу', 'изменить задачу'])) {
-      return pick(['update_task']);
-    }
-    if (_kw(m, ['delete task', 'remove task', 'удалить задачу'])) {
-      return pick(['delete_task']);
-    }
-
-    // ── Generic calendar/task/event ──────────────────────────────────────────
-    if (_kw(m, ['calendar', 'event', 'meeting', 'appointment',
-                 'task', 'todo', 'deadline', 'remind',
-                 'календар', 'событи', 'встреч', 'напомн',
-                 'задач', 'дедлайн', 'план'])) {
-      return pick(['list_tasks', 'list_events', 'create_task', 'create_event']);
-    }
+    // ── Agenda / time-based without an explicit noun → events ────────────────
+    if (agenda) return pick(['list_events']);
 
     // ── MCP tools (if connected) ─────────────────────────────────────────────
     if (_mcp != null) {
-      if (_kw(m, ['note', 'notes', 'заметк', 'запис'])) {
+      if (_hasConcept(m, ['note', 'notes', 'заметка', 'заметки', 'запись', 'записи'])) {
         return pick(['nc_notes_list_notes', 'nc_notes_create_note', 'nc_notes_get_note']);
       }
-      if (_kw(m, ['file', 'folder', 'файл', 'папк', 'документ'])) {
+      if (_hasConcept(m, ['file', 'files', 'folder', 'folders', 'файл', 'файлы', 'папка', 'документ'])) {
         return pick(['nc_files_list_files', 'nc_files_upload_file']);
       }
     }
@@ -161,6 +169,49 @@ class ChatProvider extends ChangeNotifier {
 
   static bool _kw(String msg, List<String> words) =>
       words.any((w) => msg.contains(w));
+
+  /// True if any token in [msg] matches any of [stems] by exact match,
+  /// prefix (stem length ≥5), or Levenshtein edit distance ≤1 (stem length ≥5).
+  /// Token-level so word order is irrelevant; the length floor keeps short
+  /// verbs like "list"/"show" from fuzzy-matching "lost"/"shower".
+  static bool _hasConcept(String msg, List<String> stems) {
+    final tokens = msg
+        .split(RegExp(r'[^\p{L}\p{N}]+', unicode: true))
+        .where((t) => t.isNotEmpty);
+    for (final tok in tokens) {
+      for (final stem in stems) {
+        if (tok == stem) return true;
+        if (stem.length >= 5 && tok.startsWith(stem)) return true;
+        if (stem.length >= 5 && tok.length >= 4 && _editDistance(tok, stem) <= 1) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Levenshtein distance with an early-out: returns 2 when the answer is >1
+  /// (callers only care about the ≤1 threshold).
+  static int _editDistance(String a, String b) {
+    final m = a.length, n = b.length;
+    if ((m - n).abs() > 1) return 2;
+    var prev = List<int>.generate(n + 1, (i) => i);
+    var cur = List<int>.filled(n + 1, 0);
+    for (var i = 1; i <= m; i++) {
+      cur[0] = i;
+      for (var j = 1; j <= n; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        var min = cur[j - 1] + 1;
+        if (prev[j] + 1 < min) min = prev[j] + 1;
+        if (prev[j - 1] + cost < min) min = prev[j - 1] + cost;
+        cur[j] = min;
+      }
+      final tmp = prev;
+      prev = cur;
+      cur = tmp;
+    }
+    return prev[n];
+  }
 
   // ── System prompt ─────────────────────────────────────────────────────────
 
@@ -178,7 +229,13 @@ class ChatProvider extends ChangeNotifier {
     if (tools.isEmpty) {
       return 'You are a helpful AI assistant. /no_think\n'
           'Current date and time: $dateStr\n'
-          'Answer concisely. Do not use <think> tags.';
+          'Answer concisely in the same language as the user. '
+          'Do not use <think> tags.\n'
+          'You have NO tools or functions available in this turn. '
+          'NEVER output tool calls, function calls, JSON such as '
+          '{"tool":...} or {"name":...,"arguments":...}, or <tool_call> tags. '
+          'If a request would need live calendar/task data you cannot reach, '
+          'say so in one short sentence. Otherwise answer directly in plain text.';
     }
 
     // One line per tool: signature + first sentence of description.
