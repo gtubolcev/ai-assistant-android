@@ -851,11 +851,18 @@ class CalDavExecutor {
       // ── Tasks ──────────────────────────────────────────────────────────────
       case 'list_tasks':
         final calFilter = args['calendar'] as String?;
-        final targetCals = calFilter != null
-            ? [_findCalendar(calendars, calFilter)].whereType<CalDavCalendar>().toList()
-            : calendars;
-        final from = _date(args['from']);
-        final to = _date(args['to']);
+        // A named-but-unknown calendar must not silently match nothing — fall
+        // back to all calendars so the user still sees their tasks.
+        final resolved = calFilter != null ? _findCalendar(calendars, calFilter) : null;
+        final targetCals = resolved != null ? [resolved] : calendars;
+        var from = _date(args['from']);
+        var to = _date(args['to']);
+        // Small models love stuffing from==to==now (a zero-width window) which
+        // hides every task, especially undated ones. Drop degenerate ranges.
+        if (from != null && to != null && !to.isAfter(from)) {
+          from = null;
+          to = null;
+        }
         final includeDone = args['include_done'] == true;
 
         final all = <CalDavTask>[];
@@ -929,11 +936,17 @@ class CalDavExecutor {
       // ── Events ─────────────────────────────────────────────────────────────
       case 'list_events':
         final calFilter = args['calendar'] as String?;
-        final targetCals = calFilter != null
-            ? [_findCalendar(calendars, calFilter)].whereType<CalDavCalendar>().toList()
-            : calendars;
-        final from = _date(args['from']) ?? DateTime.now();
-        final to = _date(args['to']);
+        final resolved = calFilter != null ? _findCalendar(calendars, calFilter) : null;
+        final targetCals = resolved != null ? [resolved] : calendars;
+        var evFrom = _date(args['from']);
+        var evTo = _date(args['to']);
+        // Drop a degenerate from>=to window before defaulting from to now.
+        if (evFrom != null && evTo != null && !evTo.isAfter(evFrom)) {
+          evFrom = null;
+          evTo = null;
+        }
+        final from = evFrom ?? DateTime.now();
+        final to = evTo;
 
         final all = <CalDavEvent>[];
         for (final cal in targetCals) {
