@@ -10,8 +10,18 @@ class CalDavCalendar {
   final String id;    // URL segment, e.g. "personal"
   final String href;  // Full path, e.g. /remote.php/dav/calendars/user/personal/
   final String name;
+  final List<String> components; // supported comps, e.g. ['VEVENT'] or ['VTODO']
 
-  const CalDavCalendar({required this.id, required this.href, required this.name});
+  const CalDavCalendar({
+    required this.id,
+    required this.href,
+    required this.name,
+    this.components = const [],
+  });
+
+  /// True if this calendar accepts [comp] (e.g. 'VTODO'). When the supported
+  /// set is unknown (empty), assume permissive so we never wrongly exclude.
+  bool supports(String comp) => components.isEmpty || components.contains(comp);
 }
 
 class CalDavTask {
@@ -117,7 +127,8 @@ class CalDavClient {
   Future<List<CalDavCalendar>> listCalendars() async {
     const body = '<?xml version="1.0" encoding="utf-8"?>'
         '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
-        '<d:prop><d:displayname/><d:resourcetype/></d:prop>'
+        '<d:prop><d:displayname/><d:resourcetype/>'
+        '<c:supported-calendar-component-set/></d:prop>'
         '</d:propfind>';
 
     final req = http.Request('PROPFIND', Uri.parse(_calendarsBase));
@@ -144,7 +155,14 @@ class CalDavClient {
       final parts = href.split('/').where((s) => s.isNotEmpty).toList();
       final id = parts.isNotEmpty ? parts.last : href;
 
-      result.add(CalDavCalendar(id: id, href: href, name: name));
+      // <c:supported-calendar-component-set><c:comp name="VEVENT"/>…
+      final comps = resp
+          .findAllElements('comp', namespace: '*')
+          .map((e) => e.getAttribute('name') ?? '')
+          .where((s) => s.isNotEmpty)
+          .toList();
+
+      result.add(CalDavCalendar(id: id, href: href, name: name, components: comps));
     }
     return result;
   }
@@ -845,8 +863,20 @@ class CalDavExecutor {
         return _formatTasks(all, showCalendar: calFilter == null && calendars.length > 1);
 
       case 'create_task':
-        final cal = _findCalendar(calendars, _str(args, 'calendar'));
-        if (cal == null) return 'Calendar not found: ${args['calendar']}';
+        final calArg = _str(args, 'calendar');
+        var cal = calArg.isEmpty ? null : _findCalendar(calendars, calArg);
+        // No/invalid calendar given → fall back to one that accepts tasks.
+        cal ??= _firstSupporting(calendars, 'VTODO');
+        if (cal == null) {
+          return calArg.isEmpty
+              ? 'No calendar that accepts tasks was found.'
+              : 'Calendar not found: $calArg';
+        }
+        if (!cal.supports('VTODO')) {
+          final alt = _firstSupporting(calendars, 'VTODO');
+          return 'Calendar "${cal.name}" doesn\'t hold tasks (it only stores '
+              'events).${alt != null ? ' Try the "${alt.name}" calendar instead.' : ''}';
+        }
         return _client.createTask(
           calendar: cal,
           title: _str(args, 'title'),
@@ -907,8 +937,19 @@ class CalDavExecutor {
         return _formatEvents(all, showCalendar: calFilter == null && calendars.length > 1);
 
       case 'create_event':
-        final cal = _findCalendar(calendars, _str(args, 'calendar'));
-        if (cal == null) return 'Calendar not found: ${args['calendar']}';
+        final evCalArg = _str(args, 'calendar');
+        var cal = evCalArg.isEmpty ? null : _findCalendar(calendars, evCalArg);
+        cal ??= _firstSupporting(calendars, 'VEVENT');
+        if (cal == null) {
+          return evCalArg.isEmpty
+              ? 'No calendar that accepts events was found.'
+              : 'Calendar not found: $evCalArg';
+        }
+        if (!cal.supports('VEVENT')) {
+          final alt = _firstSupporting(calendars, 'VEVENT');
+          return 'Calendar "${cal.name}" doesn\'t hold events (it only stores '
+              'tasks).${alt != null ? ' Try the "${alt.name}" calendar instead.' : ''}';
+        }
         final start = _date(args['start']) ?? DateTime.now();
         final end = _date(args['end']) ?? start.add(const Duration(hours: 1));
         return _client.createEvent(
@@ -990,13 +1031,26 @@ class CalDavExecutor {
 
   CalDavCalendar? _findCalendar(List<CalDavCalendar> cals, String query) {
     final q = query.toLowerCase();
-    return cals.firstWhere(
-      (c) => c.name.toLowerCase() == q || c.id.toLowerCase() == q,
-      orElse: () => cals.firstWhere(
-        (c) => c.name.toLowerCase().contains(q) || c.id.toLowerCase().contains(q),
-        orElse: () => throw Exception('not found'),
-      ),
-    );
+    // Exact match on name or id, else substring — return null (not throw) when
+    // nothing matches so callers can emit a clear message or fall back.
+    for (final c in cals) {
+      if (c.name.toLowerCase() == q || c.id.toLowerCase() == q) return c;
+    }
+    for (final c in cals) {
+      if (c.name.toLowerCase().contains(q) || c.id.toLowerCase().contains(q)) {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  /// First calendar that accepts [comp] (e.g. 'VTODO'/'VEVENT'), or null.
+  /// Prefers calendars with an explicit supported set over permissive ones.
+  CalDavCalendar? _firstSupporting(List<CalDavCalendar> cals, String comp) {
+    for (final c in cals) {
+      if (c.components.contains(comp)) return c;
+    }
+    return null;
   }
 
   List<CalDavCalendar> _calList(List<CalDavCalendar> all, String? filter) {

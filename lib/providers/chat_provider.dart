@@ -698,7 +698,17 @@ $toolLines''';
 
       // ── Execute tool ─────────────────────────────────────────────────────
       assistantPrefix = ''; // reset: the model chose to call a tool instead
-      final (toolName, toolArgs) = call;
+      var (toolName, toolArgs) = call;
+
+      // Small on-device models sometimes emit a sibling/hallucinated tool name
+      // (e.g. list_tasks when asked to create one). When the router offered
+      // exactly one tool, its intent classification is more reliable than the
+      // model's choice — override to the offered tool.
+      final offered = tools.map((t) => t['name'] as String).toList();
+      if (tools.length == 1 && toolName != offered.first) {
+        debugPrint('[AI] overriding hallucinated tool "$toolName" → "${offered.first}"');
+        toolName = offered.first;
+      }
       final callKey = '$toolName:${jsonEncode(toolArgs)}';
       debugPrint('[AI] tool call: $toolName($toolArgs)');
 
