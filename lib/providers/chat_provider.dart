@@ -170,6 +170,64 @@ class ChatProvider extends ChangeNotifier {
   static bool _kw(String msg, List<String> words) =>
       words.any((w) => msg.contains(w));
 
+  // ── Direct (no-LLM) execution for deterministic list operations ────────────
+
+  /// Returns `(tool, args)` when [userMessage] maps to a list operation that
+  /// can be run without the model, or null when the LLM is needed (e.g. a
+  /// date range to parse). list_calendars is always direct (no args). For
+  /// list_tasks/list_events we bypass only when there's no date/time phrasing;
+  /// a calendar-name filter is extracted heuristically (executor falls back to
+  /// all calendars if it doesn't match, so a wrong guess is harmless).
+  (String, Map<String, dynamic>)? _directListCall(
+      String userMessage, List<Map<String, dynamic>> tools) {
+    if (tools.length != 1) return null;
+    final name = tools.first['name'] as String;
+    if (name != 'list_calendars' &&
+        name != 'list_tasks' &&
+        name != 'list_events') {
+      return null;
+    }
+    final m = userMessage.toLowerCase();
+    if (name != 'list_calendars') {
+      // Date/time phrasing means the model must parse a range — don't bypass.
+      final hasDate = _kw(m, [
+        'today', 'tomorrow', 'week', 'month', 'year', 'date', 'yesterday',
+        'сегодня', 'завтра', 'вчера', 'недел', 'месяц', 'год', 'число',
+        'janu', 'febr', 'march', 'april', 'may', 'june', 'july', 'augu',
+        'septe', 'octo', 'nove', 'dece',
+      ]);
+      if (hasDate) return null;
+    }
+    final args = <String, dynamic>{};
+    if (name != 'list_calendars') {
+      final cal = _extractCalendarName(userMessage);
+      if (cal != null) args['calendar'] = cal;
+    }
+    return (name, args);
+  }
+
+  /// Best-effort calendar name from phrases like "in Tasks", "в Личный",
+  /// "Work calendar", "календарь Работа". Returns null when nothing obvious.
+  static String? _extractCalendarName(String msg) {
+    final patterns = [
+      RegExp(r'\b(?:in|from|в|из)\s+([\p{L}\p{N}_-]+)', unicode: true),
+      RegExp(r'([\p{L}\p{N}_-]+)\s+(?:calendar|календар\w*)', unicode: true),
+      RegExp(r'(?:calendar|календар\w*)\s+([\p{L}\p{N}_-]+)', unicode: true),
+    ];
+    const stop = {
+      'my', 'the', 'a', 'all', 'me', 'мои', 'мой', 'моя', 'все', 'всех',
+      'calendar', 'calendars', 'календарь', 'календари', 'tasks', 'task',
+      'events', 'event', 'задачи', 'задач', 'события', 'событий',
+    };
+    for (final re in patterns) {
+      for (final match in re.allMatches(msg)) {
+        final cand = match.group(1)!.trim();
+        if (cand.isNotEmpty && !stop.contains(cand.toLowerCase())) return cand;
+      }
+    }
+    return null;
+  }
+
   /// True if any token in [msg] matches any of [stems] by exact match,
   /// prefix (stem length ≥5), or Levenshtein edit distance ≤1 (stem length ≥5).
   /// Token-level so word order is irrelevant; the length floor keeps short
@@ -257,35 +315,15 @@ class ChatProvider extends ChangeNotifier {
           : '- $name($params)';
     }).join('\n');
 
-    return '''You are a helpful AI assistant with access to calendar and task tools. /no_think
-Current date and time: $dateStr
-Do NOT use <think> tags. Answer concisely in the same language as the user.
+    // Kept short on purpose: every extra line is CPU prefill before the first
+    // token (~30s on this device). One format line + one example + the tools.
+    return '''Calendar/task assistant. /no_think Now: $dateStr.
+Reply concisely in the user's language. No <think> tags.
+To use a tool, output ONLY JSON, nothing else: {"tool":"EXACT_NAME","arguments":{...}}
+Use exact tool names below; no-arg tools use "arguments":{}. After <tool_result>, summarize it; never repeat a call. For non-data questions, answer directly.
+Example — User: show my calendars → {"tool":"list_calendars","arguments":{}}
 
-## Tool call format
-When you need to call a tool, output ONLY this JSON — nothing before or after:
-{"tool":"EXACT_TOOL_NAME","arguments":{"key":"value"}}
-Use EXACTLY the tool name from the list below. Never invent or modify tool names.
-For tools with no arguments use: {"tool":"EXACT_TOOL_NAME","arguments":{}}
-
-## Examples
-User: show my calendars
-Assistant: {"tool":"list_calendars","arguments":{}}
-
-User: what tasks do I have?
-Assistant: {"tool":"list_tasks","arguments":{}}
-
-User: list tasks for this week
-Assistant: {"tool":"list_tasks","arguments":{"from":"$dateStr"}}
-
-User: what events are coming up?
-Assistant: {"tool":"list_events","arguments":{}}
-
-## Rules
-1. Call a tool ONLY for live data (calendar, tasks, contacts). For general questions answer directly.
-2. After <tool_result>, summarize the result for the user. NEVER call the same tool+args twice.
-3. If the user asks about calendars → list_calendars. If about tasks → list_tasks. If about events → list_events.
-
-## Available tools
+Tools:
 $toolLines''';
   }
 
@@ -588,6 +626,26 @@ $toolLines''';
     final tools = _toolsForMessage(userMessage);
     debugPrint('[AI] msg="${userMessage.substring(0, userMessage.length.clamp(0, 60))}" '
         'tools=${tools.map((t) => t['name']).toList()}');
+
+    // ── Fast path: skip the LLM for deterministic list operations ────────────
+    // The router already classified the intent with 100% confidence; running a
+    // ~30s CPU prefill just to emit list_calendars({}) is wasteful. Execute the
+    // tool directly and show the pre-formatted result.
+    final direct = _directListCall(userMessage, tools);
+    if (direct != null) {
+      final (toolName, toolArgs) = direct;
+      debugPrint('[AI] direct (no-LLM) tool call: $toolName($toolArgs)');
+      completedTools.add('🔧 $toolName…');
+      _updateMessage(assistantId,
+          _buildDisplay(completedTools, '', pending: true), MessageStatus.sending);
+      final toolResult = await _executeTool(toolName, toolArgs);
+      completedTools[completedTools.length - 1] = '🔧 $toolName ✓';
+      final cleanAnswer = _cleanOutput(toolResult);
+      _updateMessage(assistantId,
+          _buildDisplay(completedTools, cleanAnswer, pending: false),
+          MessageStatus.done);
+      return cleanAnswer;
+    }
 
     if (_chat == null) {
       _chat = await _engine!.createChat();
