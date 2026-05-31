@@ -569,6 +569,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          _Field(
+            controller: _caldavCalCtrl,
+            label: 'Календарь по умолчанию',
+            hint: 'напр. Tasks (куда сохранять задачи и события)',
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Если указан, новые задачи и события попадают сюда, когда календарь '
+            'не назван явно. Пусто — приложение выберет подходящий автоматически.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
           FilledButton.icon(
             onPressed: _savingCaldav ? null : _saveCaldav,
             icon: _savingCaldav
