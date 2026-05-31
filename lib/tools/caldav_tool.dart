@@ -133,12 +133,12 @@ class CalDavClient {
     final doc = XmlDocument.parse(res.body);
     final result = <CalDavCalendar>[];
 
-    for (final resp in doc.findAllElements('response')) {
-      final hasCalendar = resp.findAllElements('calendar').isNotEmpty;
+    for (final resp in doc.findAllElements('response', namespace: '*')) {
+      final hasCalendar = resp.findAllElements('calendar', namespace: '*').isNotEmpty;
       if (!hasCalendar) continue;
 
-      final href = resp.findAllElements('href').firstOrNull?.innerText.trim() ?? '';
-      final name = resp.findAllElements('displayname').firstOrNull?.innerText.trim() ?? '';
+      final href = resp.findAllElements('href', namespace: '*').firstOrNull?.innerText.trim() ?? '';
+      final name = resp.findAllElements('displayname', namespace: '*').firstOrNull?.innerText.trim() ?? '';
       if (name.isEmpty) continue;
 
       final parts = href.split('/').where((s) => s.isNotEmpty).toList();
@@ -242,8 +242,8 @@ class CalDavClient {
     final doc = XmlDocument.parse(xml);
     final tasks = <CalDavTask>[];
 
-    for (final resp in doc.findAllElements('response')) {
-      final data = resp.findAllElements('calendar-data').firstOrNull;
+    for (final resp in doc.findAllElements('response', namespace: '*')) {
+      final data = resp.findAllElements('calendar-data', namespace: '*').firstOrNull;
       if (data == null) continue;
 
       final ics = _unfold(data.innerText);
@@ -378,8 +378,8 @@ class CalDavClient {
     final doc = XmlDocument.parse(xml);
     final events = <CalDavEvent>[];
 
-    for (final resp in doc.findAllElements('response')) {
-      final data = resp.findAllElements('calendar-data').firstOrNull;
+    for (final resp in doc.findAllElements('response', namespace: '*')) {
+      final data = resp.findAllElements('calendar-data', namespace: '*').firstOrNull;
       if (data == null) continue;
 
       final ics = _unfold(data.innerText);
