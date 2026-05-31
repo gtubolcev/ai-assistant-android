@@ -796,7 +796,11 @@ const List<Map<String, dynamic>> calDavToolDefs = [
 class CalDavExecutor {
   final CalDavClient _client;
 
-  CalDavExecutor(this._client);
+  /// User-configured default calendar name/id for new tasks & events.
+  /// Used when the model doesn't name a calendar. Empty = auto-pick.
+  final String defaultCalendar;
+
+  CalDavExecutor(this._client, {this.defaultCalendar = ''});
 
   static bool handles(String toolName) =>
       calDavToolDefs.any((t) => t['name'] == toolName);
@@ -864,8 +868,11 @@ class CalDavExecutor {
 
       case 'create_task':
         final calArg = _str(args, 'calendar');
+        // Priority: explicit arg → configured default → first VTODO calendar.
         var cal = calArg.isEmpty ? null : _findCalendar(calendars, calArg);
-        // No/invalid calendar given → fall back to one that accepts tasks.
+        if (cal == null && defaultCalendar.isNotEmpty) {
+          cal = _findCalendar(calendars, defaultCalendar);
+        }
         cal ??= _firstSupporting(calendars, 'VTODO');
         if (cal == null) {
           return calArg.isEmpty
@@ -939,6 +946,9 @@ class CalDavExecutor {
       case 'create_event':
         final evCalArg = _str(args, 'calendar');
         var cal = evCalArg.isEmpty ? null : _findCalendar(calendars, evCalArg);
+        if (cal == null && defaultCalendar.isNotEmpty) {
+          cal = _findCalendar(calendars, defaultCalendar);
+        }
         cal ??= _firstSupporting(calendars, 'VEVENT');
         if (cal == null) {
           return evCalArg.isEmpty

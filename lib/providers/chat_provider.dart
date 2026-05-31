@@ -323,15 +323,15 @@ $toolLines''';
     final url = prefs.getString('caldav_url') ?? '';
     final user = prefs.getString('caldav_user') ?? '';
     final pass = prefs.getString('caldav_password') ?? '';
+    final defaultCal = prefs.getString('caldav_default_calendar') ?? '';
     if (url.isEmpty || user.isEmpty) {
       _caldav = null;
       return;
     }
-    _caldav = CalDavExecutor(CalDavClient(
-      serverUrl: url,
-      username: user,
-      password: pass,
-    ));
+    _caldav = CalDavExecutor(
+      CalDavClient(serverUrl: url, username: user, password: pass),
+      defaultCalendar: defaultCal,
+    );
   }
 
   /// Spawns LlamaEngine and marks model as ready.
@@ -523,11 +523,13 @@ $toolLines''';
     required String url,
     required String user,
     required String password,
+    String defaultCalendar = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('caldav_url', url.trim());
     await prefs.setString('caldav_user', user.trim());
     await prefs.setString('caldav_password', password);
+    await prefs.setString('caldav_default_calendar', defaultCalendar.trim());
     await _initCalDav(prefs);
     notifyListeners();
   }

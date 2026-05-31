@@ -63,6 +63,7 @@ const _kBackupKeys = [
   'caldav_url',
   'caldav_user',
   'caldav_password',
+  'caldav_default_calendar',
 ];
 
 class SettingsScreen extends StatefulWidget {
@@ -99,6 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _caldavUrlCtrl = TextEditingController();
   final _caldavUserCtrl = TextEditingController();
   final _caldavPassCtrl = TextEditingController();
+  final _caldavCalCtrl = TextEditingController();
   bool _obscureCaldavPass = true;
   bool _savingCaldav = false;
 
@@ -125,6 +127,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _caldavUrlCtrl.text = prefs.getString('caldav_url') ?? '';
       _caldavUserCtrl.text = prefs.getString('caldav_user') ?? '';
       _caldavPassCtrl.text = prefs.getString('caldav_password') ?? '';
+      _caldavCalCtrl.text = prefs.getString('caldav_default_calendar') ?? '';
     });
   }
 
@@ -136,6 +139,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           url: _caldavUrlCtrl.text.trim(),
           user: _caldavUserCtrl.text.trim(),
           password: _caldavPassCtrl.text,
+          defaultCalendar: _caldavCalCtrl.text.trim(),
         );
     if (mounted) {
       _notify('💾 CalDAV настройки сохранены. Перезапустите приложение.');
@@ -296,6 +300,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _caldavUrlCtrl.dispose();
     _caldavUserCtrl.dispose();
     _caldavPassCtrl.dispose();
+    _caldavCalCtrl.dispose();
     super.dispose();
   }
 
