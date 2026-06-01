@@ -837,6 +837,11 @@ $toolLines''';
   ///   2. {"tool":"name","arguments":{...}}                        — generic JSON line
   ///   3. {"name":"...","arguments":{...}}                         — alternate JSON line
   ///   4. <|tool_call_start|>[func(arg="val")]<|tool_call_end|>    — LFM2 native
+  /// Test-only access to the tool-call parser.
+  @visibleForTesting
+  (String, Map<String, dynamic>)? debugParseToolCall(String text) =>
+      _parseToolCall(text);
+
   (String, Map<String, dynamic>)? _parseToolCall(String text) {
     // Format 1: <tool_call>…</tool_call> — extract inner JSON fully
     final blockMatch =
@@ -881,20 +886,44 @@ $toolLines''';
   }
 
   /// Finds the first `{…}` JSON object in [text] using bracket counting,
-  /// so nested objects are included correctly.
+  /// so nested objects are included correctly. Brace counting ignores braces
+  /// inside string literals. If the model truncates output (e.g. StopEog before
+  /// closing braces), the unterminated object is repaired by appending the
+  /// missing `}` — this recovers the common "stopped right after a value" case
+  /// instead of leaking raw JSON to the user.
   static String? _extractFirstJsonObject(String text) {
     int depth = 0;
     int start = -1;
+    bool inStr = false;
+    bool esc = false;
     for (int i = 0; i < text.length; i++) {
-      if (text[i] == '{') {
+      final c = text[i];
+      if (inStr) {
+        if (esc) {
+          esc = false;
+        } else if (c == r'\') {
+          esc = true;
+        } else if (c == '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        inStr = true;
+      } else if (c == '{') {
         if (depth == 0) start = i;
         depth++;
-      } else if (text[i] == '}') {
+      } else if (c == '}') {
         depth--;
         if (depth == 0 && start != -1) {
           return text.substring(start, i + 1);
         }
       }
+    }
+    // Unterminated object: repair by closing the still-open braces. Only safe
+    // when we're not in the middle of a string literal.
+    if (start != -1 && depth > 0 && !inStr) {
+      return text.substring(start) + ('}' * depth);
     }
     return null;
   }

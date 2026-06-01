@@ -61,4 +61,42 @@ void main() {
       expect(toolsFor('what is the capital of France'), isEmpty);
     });
   });
+
+  group('tool-call parsing', () {
+    (String, Map<String, dynamic>)? parse(String t) => p.debugParseToolCall(t);
+
+    test('well-formed JSON parses', () {
+      final r = parse('{"tool":"list_calendars","arguments":{}}');
+      expect(r?.$1, 'list_calendars');
+    });
+
+    test('truncated JSON (missing closing braces) is repaired', () {
+      // Model hit StopEog right after a value, leaving the object unterminated.
+      final r = parse(
+          '{"tool":"create_task","arguments":{"title":"buy some more milk","due":null}');
+      expect(r?.$1, 'create_task');
+      expect(r?.$2['title'], 'buy some more milk');
+    });
+
+    test('truncated mid-nested-object is repaired', () {
+      final r = parse('{"tool":"create_task","arguments":{"title":"x"');
+      expect(r?.$1, 'create_task');
+      expect(r?.$2['title'], 'x');
+    });
+
+    test('braces inside string values do not confuse extraction', () {
+      final r = parse('{"tool":"create_task","arguments":{"title":"a } b { c"}}');
+      expect(r?.$1, 'create_task');
+      expect(r?.$2['title'], 'a } b { c');
+    });
+
+    test('<tool_call> wrapper parses', () {
+      final r = parse('<tool_call>{"name":"list_tasks","arguments":{}}</tool_call>');
+      expect(r?.$1, 'list_tasks');
+    });
+
+    test('plain text without a tool call returns null', () {
+      expect(parse('Sure, I can help with that.'), isNull);
+    });
+  });
 }
