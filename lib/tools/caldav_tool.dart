@@ -874,6 +874,9 @@ class CalDavExecutor {
         return _formatTasks(all, showCalendar: calFilter == null && calendars.length > 1);
 
       case 'create_task':
+        if (_str(args, 'title').trim().isEmpty) {
+          return 'A task needs a title. Tell me what the task is.';
+        }
         final calArg = _str(args, 'calendar');
         // Priority: explicit arg → configured default → first VTODO calendar.
         var cal = calArg.isEmpty ? null : _findCalendar(calendars, calArg);
@@ -957,6 +960,9 @@ class CalDavExecutor {
         return _formatEvents(all, showCalendar: calFilter == null && calendars.length > 1);
 
       case 'create_event':
+        if (_str(args, 'title').trim().isEmpty) {
+          return 'An event needs a title. Tell me what the event is.';
+        }
         final evCalArg = _str(args, 'calendar');
         var cal = evCalArg.isEmpty ? null : _findCalendar(calendars, evCalArg);
         if (cal == null && defaultCalendar.isNotEmpty) {
